@@ -43,15 +43,15 @@ export default function RRQueueHistoryPage({ params }: { params: { id: string } 
   return <div className="space-y-5">
     <div>
       <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
-        <Link className="hover:text-primary" href="/setup/customization/rrqueues">RRQueues</Link>
+        <Link className="hover:text-primary" href="/setup/customization/rrqueues">Round Robins</Link>
         <span aria-hidden="true">&gt;</span>
-        <Link className="hover:text-primary" href={`/setup/customization/rrqueues/${params.id}`}>{queue?.name || "RRQueue"}</Link>
+        <Link className="hover:text-primary" href={`/setup/customization/rrqueues/${params.id}`}>{queue?.name || "Round Robin Queue"}</Link>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <Link href={`/setup/customization/rrqueues/${params.id}`} aria-label="Back to RRQueue" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-5 w-5" /></Link>
+          <Link href={`/setup/customization/rrqueues/${params.id}`} aria-label="Back to queue" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-5 w-5" /></Link>
           <History className="h-7 w-7 text-primary" />
-          <h1 className="text-2xl font-semibold">RRQueue History</h1>
+          <h1 className="text-2xl font-semibold">Round Robin History</h1>
         </div>
         <Button variant="outline" size="icon" aria-label="Refresh history" title="Refresh history" onClick={() => void load()} disabled={loading}><RefreshCw className="h-4 w-4" /></Button>
       </div>

@@ -4,7 +4,7 @@ import { formatDate, formatDateTime } from "@/lib/date-format";
 
 import * as React from "react";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 import Link from "next/link";
 
@@ -21,10 +21,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 import { useToast } from "@/hooks/use-toast";
 
 import { projectApi, unitApi } from "@/lib/api";
+import { projectLocationLabel } from "@/lib/project-location";
+import { ProjectLocationFields } from "@/components/projects/project-location-fields";
 
 import {
   ArrowLeft,
@@ -35,12 +40,16 @@ import {
   TrendingUp,
   Home,
   Store,
+  Loader2,
 } from "lucide-react";
 
 interface ProjectData {
   id: string;
   name: string;
   location: string;
+  address: string;
+  city: string;
+  state: string;
   description: string;
   type: "residential" | "commercial" | "mixed";
   totalUnits: number;
@@ -50,6 +59,9 @@ interface ProjectData {
   completionPercentage: number;
   startDate: string;
   expectedCompletion: string;
+  latitude: number | null;
+  longitude: number | null;
+  allowedRadiusMeters: number;
 }
 
 interface Unit {
@@ -80,7 +92,10 @@ function mapProject(item: any): ProjectData {
   return {
     id: item.id,
     name: item.name || "Project",
-    location: [item.city, item.state].filter(Boolean).join(", ") || item.address || "—",
+    location: projectLocationLabel(item),
+    address: item.address || "",
+    city: item.city || "",
+    state: item.state || "",
     description: item.description || "",
     type: "residential",
     totalUnits: total,
@@ -90,6 +105,9 @@ function mapProject(item: any): ProjectData {
     completionPercentage: total > 0 ? Math.round((sold / total) * 100) : 0,
     startDate: item.startDate || item.createdAt,
     expectedCompletion: item.expectedCompletion || item.endDate || item.createdAt,
+    latitude: item.latitude ?? null,
+    longitude: item.longitude ?? null,
+    allowedRadiusMeters: item.allowedRadiusMeters ?? 100,
   };
 }
 
@@ -127,11 +145,21 @@ const formatCurrency = (value: number) => {
 export default function ProjectDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const [project, setProject] = React.useState<ProjectData | null>(null);
   const [units, setUnits] = React.useState<Unit[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [selectedFloor, setSelectedFloor] = React.useState<number | null>(null);
+  const [locationDialogOpen, setLocationDialogOpen] = React.useState(false);
+  const [latitudeInput, setLatitudeInput] = React.useState("");
+  const [longitudeInput, setLongitudeInput] = React.useState("");
+  const [radiusInput, setRadiusInput] = React.useState("100");
+  const [projectNameInput, setProjectNameInput] = React.useState("");
+  const [addressInput, setAddressInput] = React.useState("");
+  const [cityInput, setCityInput] = React.useState("");
+  const [stateInput, setStateInput] = React.useState("");
+  const [isSavingLocation, setIsSavingLocation] = React.useState(false);
 
   React.useEffect(() => {
     const fetchProject = async () => {
@@ -175,6 +203,63 @@ export default function ProjectDetailPage() {
   const availableCount = units.filter((u) => u.status === "available").length;
   const bookedCount = units.filter((u) => u.status === "booked").length;
   const soldCount = units.filter((u) => u.status === "sold").length;
+  const openLocationEditor = () => {
+    if (!project) return;
+    setProjectNameInput(project.name);
+    setAddressInput(project.address);
+    setCityInput(project.city);
+    setStateInput(project.state);
+    setLatitudeInput(project.latitude?.toString() || "");
+    setLongitudeInput(project.longitude?.toString() || "");
+    setRadiusInput(String(project.allowedRadiusMeters));
+    setLocationDialogOpen(true);
+  };
+
+  React.useEffect(() => {
+    if (project && searchParams.get("editLocation") === "1") {
+      openLocationEditor();
+      router.replace(`/projects/${project.id}`);
+    }
+  }, [project, searchParams, router]);
+
+  const saveLocation = async () => {
+    if (!project) return;
+    const latitude = Number(latitudeInput);
+    const longitude = Number(longitudeInput);
+    const allowedRadiusMeters = Number(radiusInput);
+    if (!projectNameInput.trim() || !addressInput.trim() ||
+        !latitudeInput.trim() || !longitudeInput.trim() ||
+        !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
+        !Number.isInteger(allowedRadiusMeters) || allowedRadiusMeters < 1 || allowedRadiusMeters > 5000) {
+      toast({ title: "Invalid project location", description: "Enter the project name, location, valid latitude and longitude, and an allowed radius between 1 and 5000 meters.", variant: "destructive" as any });
+      return;
+    }
+
+    try {
+      setIsSavingLocation(true);
+      const response = await projectApi.update(project.id, {
+        name: projectNameInput.trim(),
+        address: addressInput.trim(),
+        city: cityInput.trim() || undefined,
+        state: stateInput.trim() || undefined,
+        latitude,
+        longitude,
+        allowedRadiusMeters,
+      });
+      if (response.data?.data) setProject(mapProject(response.data.data));
+      setLocationDialogOpen(false);
+      toast({
+        title: "Project location updated",
+        description: response.data?.warning || "Project details and coordinates are saved and will be used for site-visit verification.",
+        variant: response.data?.warning ? "destructive" as any : undefined,
+      });
+    } catch (error: any) {
+      toast({ title: "Unable to update project location", description: error?.response?.data?.error || "Try again.", variant: "destructive" as any });
+    } finally {
+      setIsSavingLocation(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -218,11 +303,25 @@ export default function ProjectDetailPage() {
             </p>
           </div>
         </div>
-        <Button onClick={() => toast({ title: "Edit Project", description: "Edit project form coming soon" })}>
+        <Button variant="outline" onClick={openLocationEditor}>
           <Edit className="mr-2 h-4 w-4" />
-          Edit Project
+          Edit Location
         </Button>
       </div>
+
+      <Card>
+        <CardContent className="p-4">
+          <div>
+            <p className="text-sm text-muted-foreground">{project.name} location coordinates</p>
+            <p className="font-medium">
+              {project.latitude != null && project.longitude != null
+                ? `${project.latitude}, ${project.longitude}`
+                : "Coordinates not configured"}
+            </p>
+            <p className="text-sm text-muted-foreground">Allowed site-visit radius: {project.allowedRadiusMeters} meters</p>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -373,6 +472,46 @@ export default function ProjectDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={locationDialogOpen} onOpenChange={(open) => !isSavingLocation && setLocationDialogOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit project details and location</DialogTitle>
+            <DialogDescription>Project details and coordinates are saved to the database and used to verify site-visit completion.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2 sm:grid-cols-2">
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="project-name">Project name</Label>
+              <Input id="project-name" value={projectNameInput} onChange={(event) => setProjectNameInput(event.target.value)} maxLength={200} />
+            </div>
+            <div className="sm:col-span-2">
+              <ProjectLocationFields
+                idPrefix="project"
+                address={addressInput}
+                city={cityInput}
+                state={stateInput}
+                latitude={latitudeInput}
+                longitude={longitudeInput}
+                onAddressChange={setAddressInput}
+                onCityChange={setCityInput}
+                onStateChange={setStateInput}
+                onLatitudeChange={setLatitudeInput}
+                onLongitudeChange={setLongitudeInput}
+              />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="project-radius">Allowed radius (meters)</Label>
+              <Input id="project-radius" type="number" min="1" max="5000" step="1" value={radiusInput} onChange={(event) => setRadiusInput(event.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLocationDialogOpen(false)} disabled={isSavingLocation}>Cancel</Button>
+            <Button onClick={saveLocation} disabled={isSavingLocation}>
+              {isSavingLocation ? "Saving..." : "Save location"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

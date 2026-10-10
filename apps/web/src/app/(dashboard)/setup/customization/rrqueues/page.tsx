@@ -20,12 +20,11 @@ export default function RRQueuesPage() {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
   const [nameError, setNameError] = React.useState(false);
-  const [leadStatus, setLeadStatus] = React.useState<string[]>([]);
+  const [projectId, setProjectId] = React.useState("");
+  const [projectError, setProjectError] = React.useState(false);
+  const [active, setActive] = React.useState(true);
   const [leadSource, setLeadSource] = React.useState<string[]>([]);
-  const [projectInterested, setProjectInterested] = React.useState<string[]>([]);
   const [newOwnerId, setNewOwnerId] = React.useState("");
-  const [leadCount, setLeadCount] = React.useState("0");
-  const [previousId, setPreviousId] = React.useState("0");
   const [saving, setSaving] = React.useState(false);
   const [users, setUsers] = React.useState<any[]>([]);
   const [options, setOptions] = React.useState<{ statuses: any[]; sources: any[]; projects: any[] }>({ statuses: [], sources: [], projects: [] });
@@ -53,12 +52,11 @@ export default function RRQueuesPage() {
   const resetNewQueue = () => {
     setName("");
     setNameError(false);
-    setLeadStatus([]);
+    setProjectId("");
+    setProjectError(false);
+    setActive(true);
     setLeadSource([]);
-    setProjectInterested([]);
     setNewOwnerId("");
-    setLeadCount("0");
-    setPreviousId("0");
   };
 
   const create = async (saveAndNew = false) => {
@@ -66,17 +64,18 @@ export default function RRQueuesPage() {
       setNameError(true);
       return;
     }
+    if (!projectId) {
+      setProjectError(true);
+      return;
+    }
     try {
       setSaving(true);
       await rrQueueApi.create({
         name: name.trim(),
-        leadStatus,
-        projectInterested,
-        excludeFromNoSource: leadSource,
-        presalesQueue: false,
+        projectId,
+        active,
+        leadSource,
         ownerId: newOwnerId || null,
-        leadCount: Number(leadCount) || 0,
-        previousId: Number(previousId) || 0,
       });
       await load();
       if (saveAndNew) resetNewQueue();
@@ -110,14 +109,14 @@ export default function RRQueuesPage() {
 
   return <div className="space-y-6">
     <div className="flex items-start justify-between gap-4">
-      <div><p className="text-sm text-muted-foreground">Setup / Customization</p><h1 className="text-2xl font-semibold">RRQueues</h1><p className="text-sm text-muted-foreground">Manage persistent sequential lead assignment queues.</p></div>
+      <div><p className="text-sm text-muted-foreground">Setup / Customization</p><h1 className="text-2xl font-semibold">Round Robins</h1><p className="text-sm text-muted-foreground">Manage project-specific assignment queues and members.</p></div>
       <Button onClick={() => { resetNewQueue(); setOpen(true); }}><Plus className="mr-2 h-4 w-4" />New RRQueue</Button>
     </div>
     <div className="relative max-w-sm"><Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-9" placeholder="Search this list..." value={search} onChange={(event) => setSearch(event.target.value)} /></div>
     <Card><CardHeader><CardTitle>Queue list</CardTitle></CardHeader><CardContent>
-      <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-muted-foreground"><th className="p-3">Name</th><th className="p-3">Owner</th><th className="p-3">No. of users</th><th className="p-3">Lead count</th><th className="p-3">Previous ID</th><th className="w-12 p-3"><span className="sr-only">Actions</span></th></tr></thead><tbody>
-        {queues.map((queue) => <tr key={queue.id} className="border-b last:border-0"><td className="p-3 font-medium"><Link className="text-primary hover:underline" href={`/setup/customization/rrqueues/${queue.id}`}>{queue.name}</Link></td><td className="p-3">{queue.owner ? `${queue.owner.firstName} ${queue.owner.lastName}` : "Unassigned"}</td><td className="p-3"><span className="inline-flex items-center gap-1"><Users className="h-4 w-4" />{queue.noOfUsers}</span></td><td className="p-3">{queue.leadCount}</td><td className="p-3">{queue.previousId}</td><td className="p-2"><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Actions for ${queue.name}`} title="Queue actions" disabled={saving}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem asChild><Link href={`/setup/customization/rrqueues/${queue.id}`}>Edit</Link></DropdownMenuItem><DropdownMenuItem className="text-destructive" onSelect={() => void remove(queue.id)}>Delete</DropdownMenuItem><DropdownMenuItem onSelect={() => { setOwnerQueue(queue); setOwnerId(queue.ownerId || ""); setOwnerDialogOpen(true); }}>Change Owner</DropdownMenuItem><DropdownMenuItem disabled title="Labels are not configured for RRQueues">Edit Labels</DropdownMenuItem></DropdownMenuContent></DropdownMenu></td></tr>)}
-        {!queues.length && <tr><td className="p-8 text-center text-muted-foreground" colSpan={6}>No RRQueues found.</td></tr>}
+      <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-muted-foreground"><th className="p-3">Round Robin Name</th><th className="p-3">Project Assigned</th><th className="p-3">Active</th><th className="p-3">Owner</th><th className="p-3">No. of users</th><th className="w-12 p-3"><span className="sr-only">Actions</span></th></tr></thead><tbody>
+        {queues.map((queue) => <tr key={queue.id} className="border-b last:border-0"><td className="p-3 font-medium"><Link className="text-primary hover:underline" href={`/setup/customization/rrqueues/${queue.id}`}>{queue.name}</Link></td><td className="p-3">{queue.project?.name || renderProjectFallback(queue, options.projects) || "Unassigned"}</td><td className="p-3">{queue.active ? "Active" : "Inactive"}</td><td className="p-3">{queue.owner ? `${queue.owner.firstName} ${queue.owner.lastName}` : "Unassigned"}</td><td className="p-3"><span className="inline-flex items-center gap-1"><Users className="h-4 w-4" />{queue.noOfUsers}</span></td><td className="p-2"><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Actions for ${queue.name}`} title="Queue actions" disabled={saving}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem asChild><Link href={`/setup/customization/rrqueues/${queue.id}`}>Edit</Link></DropdownMenuItem><DropdownMenuItem className="text-destructive" onSelect={() => void remove(queue.id)}>Delete</DropdownMenuItem><DropdownMenuItem onSelect={() => { setOwnerQueue(queue); setOwnerId(queue.ownerId || ""); setOwnerDialogOpen(true); }}>Change Owner</DropdownMenuItem></DropdownMenuContent></DropdownMenu></td></tr>)}
+        {!queues.length && <tr><td className="p-8 text-center text-muted-foreground" colSpan={7}>No Round Robins found.</td></tr>}
       </tbody></table></div>
     </CardContent></Card>
     <Dialog open={open} onOpenChange={(isOpen) => { if (!saving) { setOpen(isOpen); if (!isOpen) resetNewQueue(); } }}>
@@ -128,14 +127,10 @@ export default function RRQueuesPage() {
           <div className="rounded-md bg-muted px-4 py-3 text-lg text-muted-foreground">Information</div>
           <div className="grid gap-x-8 gap-y-5 md:grid-cols-2">
             <div className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)] items-center gap-4"><Label htmlFor="rrqueue-name">Name <span className="text-destructive">*</span></Label><div><Input id="rrqueue-name" autoFocus aria-invalid={nameError} className={nameError ? "border-destructive bg-destructive/5" : ""} value={name} onChange={(event) => { setName(event.target.value); if (event.target.value.trim()) setNameError(false); }} />{nameError && <p className="mt-1 text-xs text-destructive">Complete this field.</p>}</div></div>
+            <div className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)] items-center gap-4"><Label htmlFor="rrqueue-project">Project Assigned <span className="text-destructive">*</span></Label><div><select id="rrqueue-project" aria-label="Project Assigned" className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${projectError ? "border-destructive" : ""}`} value={projectId} onChange={(event) => { setProjectId(event.target.value); if (event.target.value) setProjectError(false); }}><option value="">--None--</option>{options.projects.map((project) => <option key={project.value} value={project.value}>{project.label}</option>)}</select>{projectError && <p className="mt-1 text-xs text-destructive">Select a project.</p>}</div></div>
+            <div className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)] items-center gap-4"><Label htmlFor="rrqueue-active">Active</Label><input id="rrqueue-active" aria-label="Active" type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} className="h-4 w-4 justify-self-start" /></div>
             <div className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)] items-center gap-4"><Label htmlFor="rrqueue-new-owner">Owner</Label><UserLookup id="rrqueue-new-owner" ariaLabel="Owner" users={users.filter((user) => user.isActive)} value={newOwnerId} onChange={setNewOwnerId} placeholder="Unassigned or search users..." /></div>
-            <DualListField label="Lead Status" options={options.statuses} value={leadStatus} onChange={setLeadStatus} info />
             <DualListField label="Lead Source" options={options.sources} value={leadSource} onChange={setLeadSource} />
-            <DualListField label="Project Interested" options={options.projects} value={projectInterested} onChange={setProjectInterested} />
-            <div className="grid content-start gap-4">
-              <div className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)] items-center gap-4"><Label htmlFor="rrqueue-lead-count">Lead Count <Info className="inline h-4 w-4 rounded-full fill-red-700 text-white" /></Label><Input id="rrqueue-lead-count" type="number" min="0" step="1" value={leadCount} onChange={(event) => setLeadCount(event.target.value)} /></div>
-              <div className="grid grid-cols-[minmax(120px,0.45fr)_minmax(0,1fr)] items-center gap-4"><Label htmlFor="rrqueue-previous-id">Previous id <Info className="inline h-4 w-4 rounded-full fill-red-700 text-white" /></Label><Input id="rrqueue-previous-id" type="number" min="0" step="1" value={previousId} onChange={(event) => setPreviousId(event.target.value)} /></div>
-            </div>
           </div>
         </div>
         <DialogFooter className="border-t px-6 py-4 sm:justify-center">
@@ -147,6 +142,13 @@ export default function RRQueuesPage() {
     </Dialog>
     <Dialog open={ownerDialogOpen} onOpenChange={(isOpen) => { setOwnerDialogOpen(isOpen); if (!isOpen) setOwnerQueue(null); }}><DialogContent><DialogHeader><DialogTitle>Change Owner</DialogTitle></DialogHeader><div className="space-y-2"><Label htmlFor="rrqueue-owner">Owner</Label><UserLookup id="rrqueue-owner" ariaLabel="Owner" users={users.filter((user) => user.isActive)} value={ownerId} onChange={setOwnerId} placeholder="Unassigned or search users..." selectedUser={ownerQueue?.owner} /></div><DialogFooter><Button variant="outline" onClick={() => setOwnerDialogOpen(false)} disabled={saving}>Cancel</Button><Button onClick={() => void saveOwner()} disabled={saving}>{saving ? "Saving..." : "Save"}</Button></DialogFooter></DialogContent></Dialog>
   </div>;
+}
+
+function renderProjectFallback(queue: any, projects: Array<{ value: string; label: string }>) {
+  const projectValue = queue.projectInterested?.[0];
+  return projects.find((project) =>
+    project.value === projectValue || project.label.toLowerCase() === projectValue?.toLowerCase(),
+  )?.label || projectValue || "";
 }
 
 function DualListField({ label, options, value, onChange, info = false }: { label: string; options: Array<string | { value: string; label: string }>; value: string[]; onChange: (value: string[]) => void; info?: boolean }) {

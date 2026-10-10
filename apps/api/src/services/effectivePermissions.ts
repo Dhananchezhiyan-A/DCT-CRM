@@ -200,14 +200,21 @@ export class EffectivePermissionService {
   static async getProfilePermissions(profileId: string | null, tenantId?: string): Promise<EffectivePermission[]> {
     if (!profileId) return [];
 
-    const [profilePerms, objectPerms] = await Promise.all([
+    const [profilePerms, objectPerms, profilePermissionSets] = await Promise.all([
       prisma.userProfilePermission.findMany({
-        where: { profileId, permission: { isActive: true }, ...(tenantId ? { profile: { tenantId } } : {}) },
+        where: {
+          profileId,
+          permission: { isActive: true },
+          ...(tenantId ? { profile: { is: { OR: [{ tenantId }, { isGlobal: true }] } } } : {}),
+        },
         include: { permission: true },
       }),
       prisma.profileObjectPermission.findMany({
         where: { profileId, ...(tenantId ? { tenantId, object: { isActive: true } } : {}) },
         include: { object: { select: { name: true } } },
+      }),
+      prisma.permissionSet.findMany({
+        where: { profileId, ...(tenantId ? { tenantId } : {}) },
       }),
     ]);
 
@@ -219,7 +226,33 @@ export class EffectivePermissionService {
       sourceName: 'Profile',
     }));
 
-    return [...namedPermissions, ...this.objectPermissionsToEffective(objectPerms, 'PROFILE', 'Profile')];
+    const legacyPermissionSetPermissions = profilePermissionSets.flatMap((set) => {
+      if (!set.objectName) return [];
+      const flags = (set.permissions ?? {}) as Record<string, boolean>;
+      const module = set.objectName.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+      return Object.entries({
+        create: 'CREATE',
+        read: 'READ',
+        edit: 'UPDATE',
+        delete: 'DELETE',
+        viewAll: 'VIEW_ALL',
+        modifyAll: 'MODIFY_ALL',
+      })
+        .filter(([key]) => flags[key])
+        .map(([, action]) => ({
+          name: `${module}_${action}`,
+          module,
+          action,
+          source: 'PROFILE' as const,
+          sourceName: set.name,
+        }));
+    });
+
+    return [
+      ...namedPermissions,
+      ...this.objectPermissionsToEffective(objectPerms, 'PROFILE', 'Profile'),
+      ...legacyPermissionSetPermissions,
+    ];
   }
 
   static async getPermissionSetPermissions(userId: string, tenantId?: string): Promise<EffectivePermission[]> {

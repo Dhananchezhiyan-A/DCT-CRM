@@ -1,71 +1,79 @@
-export interface SiteVisitLocationCheck {
-  allowed: boolean;
-  error?: string;
-}
+export const SITE_VISIT_GEOFENCE_RADIUS_METERS = 100;
+export const MAX_SITE_VISIT_GPS_ACCURACY_METERS = 500;
 
-/** Maximum allowed distance (in meters) between the recorded site and the visit location. */
-export const SITE_VISIT_RADIUS_METERS = 100;
+export type SiteVisitLocationCheck =
+  | { allowed: true; distanceMeters: number; radiusMeters: number }
+  | {
+      allowed: false;
+      code: 'LOCATION_NOT_CONFIGURED' | 'INACCURATE' | 'OUTSIDE_RADIUS';
+      error: string;
+      distanceMeters?: number;
+      radiusMeters: number;
+    };
 
-const EARTH_RADIUS_METERS = 6371000;
-
-const toRadians = (degrees: number): number => (degrees * Math.PI) / 180;
-
-/** Great-circle distance between two WGS84 coordinates, in meters. */
-export function distanceInMeters(
-  fromLatitude: number,
-  fromLongitude: number,
-  toLatitude: number,
-  toLongitude: number,
+function distanceInMeters(
+  latitude: number,
+  longitude: number,
+  targetLatitude: number,
+  targetLongitude: number,
 ): number {
-  const deltaLatitude = toRadians(toLatitude - fromLatitude);
-  const deltaLongitude = toRadians(toLongitude - fromLongitude);
-  const a =
-    Math.sin(deltaLatitude / 2) ** 2 +
-    Math.cos(toRadians(fromLatitude)) *
-      Math.cos(toRadians(toLatitude)) *
-      Math.sin(deltaLongitude / 2) ** 2;
-  return 2 * EARTH_RADIUS_METERS * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const radians = (degrees: number) => degrees * (Math.PI / 180);
+  const latitudeDelta = radians(targetLatitude - latitude);
+  const longitudeDelta = radians(targetLongitude - longitude);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(radians(latitude)) *
+      Math.cos(radians(targetLatitude)) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return 2 * 6_371_000 * Math.asin(Math.sqrt(haversine));
 }
 
-/**
- * Verifies that the reported visit coordinates fall within SITE_VISIT_RADIUS_METERS
- * of the project the site visit belongs to.
- *
- * Projects without configured coordinates cannot be verified, so the visit is allowed.
- */
 export function checkSiteVisitLocation(
-  projectName?: string | null,
-  projectLatitude?: number | null,
-  projectLongitude?: number | null,
-  latitude?: number,
-  longitude?: number,
+  projectName: string | null | undefined,
+  projectLatitude: number | null | undefined,
+  projectLongitude: number | null | undefined,
+  radiusMeters: number | null | undefined,
+  latitude: number,
+  longitude: number,
+  accuracyMeters: number,
 ): SiteVisitLocationCheck {
-  if (latitude == null || longitude == null) {
-    return { allowed: false, error: 'Your location is required to complete this site visit' };
-  }
-
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return { allowed: false, error: 'Invalid location provided for this site visit' };
-  }
-
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-    return { allowed: false, error: 'Invalid location provided for this site visit' };
-  }
+  const allowedRadius = radiusMeters ?? SITE_VISIT_GEOFENCE_RADIUS_METERS;
 
   if (projectLatitude == null || projectLongitude == null) {
-    // The project has no geolocation on record, so there is nothing to verify against.
-    return { allowed: true };
-  }
-
-  const distance = distanceInMeters(projectLatitude, projectLongitude, latitude, longitude);
-
-  if (distance > SITE_VISIT_RADIUS_METERS) {
-    const site = projectName?.trim() ? projectName.trim() : 'the project site';
     return {
       allowed: false,
-      error: `You are ${Math.round(distance)} metres from ${site}. You must be within ${SITE_VISIT_RADIUS_METERS} metres to complete this site visit.`,
+      code: 'LOCATION_NOT_CONFIGURED',
+      error: `Location coordinates are not configured for ${projectName || 'this project'}.`,
+      radiusMeters: allowedRadius,
     };
   }
 
-  return { allowed: true };
+  if (!Number.isFinite(accuracyMeters) || accuracyMeters <= 0 || accuracyMeters > MAX_SITE_VISIT_GPS_ACCURACY_METERS) {
+    return {
+      allowed: false,
+      code: 'INACCURATE',
+      error: `Your GPS location is not accurate enough (accuracy must be ${MAX_SITE_VISIT_GPS_ACCURACY_METERS} meters or better). Move outdoors or enable precise location, then try again.`,
+      radiusMeters: allowedRadius,
+    };
+  }
+
+  const distanceMeters = distanceInMeters(
+    latitude,
+    longitude,
+    projectLatitude,
+    projectLongitude,
+  );
+
+  if (distanceMeters > allowedRadius) {
+    return {
+      allowed: false,
+      code: 'OUTSIDE_RADIUS',
+      error: `You are currently ${Math.round(distanceMeters)} meters from ${projectName || 'the project'}. You must be within ${allowedRadius} meters to complete this Site Visit.`,
+      distanceMeters,
+      radiusMeters: allowedRadius,
+    };
+  }
+
+  return { allowed: true, distanceMeters, radiusMeters: allowedRadius };
 }

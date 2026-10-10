@@ -4,9 +4,10 @@ import { prisma } from '@dct-crm/db';
 
 vi.mock('@dct-crm/db', () => ({
   prisma: {
-    rRQueue: { findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), findUnique: vi.fn(), deleteMany: vi.fn() },
+    rRQueue: { findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), deleteMany: vi.fn() },
     rRQueueMember: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
     rRQueueHistory: { createMany: vi.fn() },
+    project: { findFirst: vi.fn() },
     user: { findFirst: vi.fn() },
     sequence: { upsert: vi.fn() },
     $transaction: vi.fn(),
@@ -54,17 +55,31 @@ describe('RRQueue API validation', () => {
     await expect(response.json()).resolves.toMatchObject({ success: false, error: 'Complete this field.' });
   });
 
+  it('requires a project when creating a queue', async () => {
+    const response = await request('POST', '/api/rrqueues', { name: 'Missing project' });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: 'Select an active project in this tenant.' });
+  });
+
   it('rejects a missing member user', async () => {
     const response = await request('POST', '/api/rrqueues/queue-1/members', {});
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ success: false, error: 'User is required.' });
   });
 
+  it('requires a functional user type for a member', async () => {
+    const response = await request('POST', '/api/rrqueues/queue-1/members', { userId: 'user-1' });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ success: false, error: 'Select a user type.' });
+  });
+
   it('creates a queue with lead count and previous member ID', async () => {
     vi.mocked(prisma.rRQueue.create).mockResolvedValue({ id: 'queue-1', leadCount: 3, previousId: 2 } as any);
+    vi.mocked(prisma.project.findFirst).mockResolvedValue({ id: 'project-1' } as any);
 
     const response = await request('POST', '/api/rrqueues', {
       name: 'New Queue',
+      projectId: 'project-1',
       leadStatus: ['NEW'],
       projectInterested: ['project-1'],
       excludeFromNoSource: ['WEBSITE'],
@@ -81,13 +96,14 @@ describe('RRQueue API validation', () => {
         projectInterested: ['project-1'],
         excludeFromNoSource: ['WEBSITE'],
         ownerId: 'owner-1',
+        projectId: 'project-1',
       }),
     }));
   });
 
   it('updates queue lead count and previous member ID', async () => {
     vi.mocked(prisma.rRQueue.updateMany).mockResolvedValue({ count: 1 } as any);
-    vi.mocked(prisma.rRQueue.findUnique).mockResolvedValue({ id: 'queue-1', leadCount: 4, previousId: 2 } as any);
+    vi.mocked(prisma.rRQueue.findFirst).mockResolvedValue({ id: 'queue-1', leadCount: 4, previousId: 2 } as any);
 
     const response = await request('PUT', '/api/rrqueues/queue-1', { leadCount: 4, previousId: 2 });
 
@@ -98,9 +114,9 @@ describe('RRQueue API validation', () => {
     }));
   });
 
-  it('updates the member external user ID', async () => {
-    const member = { id: 'member-1', name: 'UID-4328', rrQueueId: 'queue-1', tenantId: 'tenant-1', userId: 'user-1', userIdNumber: '0', activeMember: true, user: { id: 'user-1', firstName: 'Sneha', lastName: 'S' } };
-    const updateMember = vi.fn().mockResolvedValue({ ...member, userIdNumber: '1' });
+  it('ignores the removed external user ID on member updates', async () => {
+    const member = { id: 'member-1', name: 'UID-4328', rrQueueId: 'queue-1', tenantId: 'tenant-1', userId: 'user-1', userType: 'Sales', activeMember: true, user: { id: 'user-1', firstName: 'Sneha', lastName: 'S' } };
+    const updateMember = vi.fn().mockResolvedValue(member);
     const history = vi.fn();
     vi.mocked(prisma.$transaction).mockImplementation(((callback: any) => callback({
       rRQueueMember: { findFirst: vi.fn().mockResolvedValue(member), update: updateMember },
@@ -111,14 +127,12 @@ describe('RRQueue API validation', () => {
     const response = await request('PUT', '/api/rrqueues/queue-1/members/member-1', { userIdNumber: '1' });
 
     expect(response.status).toBe(200);
-    expect(updateMember).toHaveBeenCalledWith(expect.objectContaining({
-      data: { userIdNumber: '1' },
-    }));
-    expect(history).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ field: 'UID-4328 - user id', originalValue: '0', newValue: '1' })] }));
+    expect(updateMember).not.toHaveBeenCalled();
+    expect(history).not.toHaveBeenCalled();
   });
 
   it('updates the member user lookup', async () => {
-    const member = { id: 'member-1', name: 'UID-4328', rrQueueId: 'queue-1', tenantId: 'tenant-1', userId: 'user-1', activeMember: true, user: { id: 'user-1', firstName: 'Sneha', lastName: 'S' } };
+    const member = { id: 'member-1', name: 'UID-4328', rrQueueId: 'queue-1', tenantId: 'tenant-1', userId: 'user-1', userType: 'Sales', activeMember: true, user: { id: 'user-1', firstName: 'Sneha', lastName: 'S' } };
     const updateMember = vi.fn().mockResolvedValue({ ...member, userId: 'user-2' });
     const history = vi.fn();
     const findUser = vi.fn().mockResolvedValueOnce({ id: 'user-2', firstName: 'New', lastName: 'User' }).mockResolvedValueOnce({ firstName: 'Admin', lastName: 'User' });
@@ -132,7 +146,12 @@ describe('RRQueue API validation', () => {
 
     expect(response.status).toBe(200);
     expect(findUser).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'user-2', tenantId: 'tenant-1', isActive: true },
+      where: {
+        id: 'user-2',
+        tenantId: 'tenant-1',
+        isActive: true,
+        profile: { name: { in: ['Sales', 'Sales Executive'] } },
+      },
     }));
     expect(updateMember).toHaveBeenCalledWith(expect.objectContaining({
       data: { userId: 'user-2' },
@@ -140,11 +159,10 @@ describe('RRQueue API validation', () => {
     expect(history).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ field: 'UID-4328 - User', originalValue: 'Sneha S', newValue: 'New User' })] }));
   });
 
-  it('accepts an empty external employee ID as null', async () => {
+  it('creates a member without an external user ID', async () => {
     const createdMember = {
       id: 'member-1',
       name: 'UID-0001',
-      userIdNumber: null,
       user: { id: 'user-1', firstName: 'Sneha', lastName: 'S', email: 'sneha@example.com', isActive: true },
       activeMember: true,
     };
@@ -161,26 +179,28 @@ describe('RRQueue API validation', () => {
     };
     vi.mocked(prisma.$transaction).mockImplementation(((callback: any) => callback(transaction)) as any);
 
-    const response = await request('POST', '/api/rrqueues/queue-1/members', { userId: 'user-1', userIdNumber: '' });
+    const response = await request('POST', '/api/rrqueues/queue-1/members', { userId: 'user-1', userType: 'Sales' });
 
     expect(response.status).toBe(201);
     expect(transaction.rRQueueMember.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ name: 'UID-0001', userIdNumber: null, userId: 'user-1' }),
+      data: expect.objectContaining({ name: 'UID-0001', userId: 'user-1' }),
     }));
+    expect(transaction.rRQueueMember.findFirst).toHaveBeenCalledWith({
+      where: { rrQueueId: 'queue-1', userId: 'user-1', userType: 'Sales' },
+    });
     await expect(response.json()).resolves.toMatchObject({ success: true, data: { name: 'UID-0001' } });
   });
 
-  it('creates a member with an auto-numbered name and numeric user ID', async () => {
+  it('ignores the removed external user ID when creating a member', async () => {
     const createdMember = {
       id: 'member-1',
       name: 'UID-0001',
-      userIdNumber: '1',
       user: { id: 'user-1', firstName: 'Sneha', lastName: 'S', email: 'sneha@example.com', isActive: true },
       activeMember: true,
     };
     const transaction = {
       rRQueue: { findFirst: vi.fn().mockResolvedValue({ id: 'queue-1' }), update: vi.fn() },
-      user: { findFirst: vi.fn().mockResolvedValue({ id: 'user-1' }) },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: 'user-1', profile: { name: 'Sales Executive' } }) },
       rRQueueMember: {
         findUnique: vi.fn().mockResolvedValue(null),
         findFirst: vi.fn().mockResolvedValue(null),
@@ -191,11 +211,14 @@ describe('RRQueue API validation', () => {
     };
     vi.mocked(prisma.$transaction).mockImplementation(((callback: any) => callback(transaction)) as any);
 
-    const response = await request('POST', '/api/rrqueues/queue-1/members', { userId: 'user-1', userIdNumber: '1' });
+    const response = await request('POST', '/api/rrqueues/queue-1/members', { userId: 'user-1', userType: 'Sales', userIdNumber: '1' });
 
     expect(response.status).toBe(201);
     expect(transaction.rRQueueMember.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ name: 'UID-0001', userIdNumber: '1', userId: 'user-1' }),
+      data: expect.not.objectContaining({ userIdNumber: expect.anything() }),
+    }));
+    expect(transaction.rRQueueMember.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ name: 'UID-0001', userId: 'user-1' }),
     }));
     expect(transaction.rRQueueHistory.createMany).toHaveBeenCalledWith(expect.objectContaining({
       data: [expect.objectContaining({ field: 'Created.', newValue: 'UID-0001 (Sneha S)' })],

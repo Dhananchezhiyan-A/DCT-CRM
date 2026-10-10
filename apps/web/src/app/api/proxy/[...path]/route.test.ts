@@ -29,7 +29,7 @@ describe('API proxy', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3001/api/gre/public/form/submit',
+      'http://127.0.0.1:3001/api/gre/public/form/submit',
       expect.objectContaining({
         headers: expect.objectContaining({
           'x-gre-session': 'gre-session-token',

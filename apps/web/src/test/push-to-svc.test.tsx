@@ -13,6 +13,8 @@ const testState = vi.hoisted(() => ({
   scheduleSiteVisit: vi.fn(),
   projectList: vi.fn(),
   profile: { name: "Presales" },
+  leadUpdatePermission: true,
+  effectivePermissions: [] as string[],
   toast: vi.fn(),
   router: { push: vi.fn(), replace: vi.fn(), back: vi.fn() },
 }));
@@ -29,8 +31,8 @@ vi.mock("@/contexts/auth-context", () => ({
     isLoading: false,
     isAdmin: false,
     isSuperAdmin: false,
-    hasPermission: () => true,
-    hasEffectivePermission: () => false,
+    hasPermission: (_objectName: string, action?: string) => action !== "edit" || testState.leadUpdatePermission,
+    hasEffectivePermission: (permission: string) => testState.effectivePermissions.includes(permission),
   }),
 }));
 
@@ -83,13 +85,40 @@ const incomingLead = {
 beforeEach(() => {
   vi.clearAllMocks();
   testState.profile.name = "Presales";
+  testState.leadUpdatePermission = true;
+  testState.effectivePermissions = [];
   testState.leadGet
     .mockResolvedValueOnce({ data: { success: true, data: incomingLead } })
     .mockRejectedValue({ response: { status: 403, data: { error: "You do not have access to this lead" } } });
 });
 
 describe("Push to SVC", () => {
+  it("shows SVC scheduling action with site-visit permission alone", async () => {
+    testState.profile.name = "SVC";
+    testState.leadUpdatePermission = false;
+    testState.effectivePermissions = ["SITE_VISIT_CREATE"];
+    testState.leadGet.mockReset();
+    testState.leadGet.mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          ...incomingLead,
+          status: "PROSPECT",
+          ownerId: "svc-1",
+          owner: { id: "svc-1", firstName: "SVC", lastName: "Coordinator" },
+        },
+      },
+    });
+
+    render(<LeadDetailPage />);
+
+    expect(await screen.findByRole("button", { name: "Schedule Site Visit" })).toBeInTheDocument();
+  });
+
   it("shows success and updates local owner/status without refetching inaccessible Lead data", async () => {
+    testState.leadGet.mockReset().mockResolvedValueOnce({
+      data: { success: true, data: incomingLead },
+    });
     testState.pushToSVC.mockResolvedValue({
       data: {
         success: true,
@@ -128,8 +157,11 @@ describe("Push to SVC", () => {
   });
 
   it("keeps genuine Push API failures visible as errors", async () => {
+    testState.leadGet.mockReset().mockResolvedValueOnce({
+      data: { success: true, data: incomingLead },
+    });
     testState.pushToSVC.mockRejectedValue({
-      response: { data: { error: "Failed to push lead to SVC" } },
+      response: { data: { error: "No active SVC Round Robin members configured" } },
     });
 
     render(<LeadDetailPage />);
@@ -144,7 +176,7 @@ describe("Push to SVC", () => {
       expect(testState.toast).toHaveBeenCalledWith(
         expect.objectContaining({
           title: "Error",
-          description: "Failed to push lead to SVC",
+          description: "No active SVC Round Robin members configured",
         }),
       );
     });

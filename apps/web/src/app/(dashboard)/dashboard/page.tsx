@@ -57,7 +57,15 @@ const isHomepageWidgetLayout = (item: unknown): item is HomepageWidgetLayout => 
 };
 
 export default function HomePage() {
-  const { user, profile, roles = [], isSuperAdmin, hasPermission, hasEffectivePermission } = useAuth();
+  const {
+    user,
+    profile,
+    roles = [],
+    isSuperAdmin,
+    isLoading: authLoading,
+    hasPermission,
+    hasEffectivePermission,
+  } = useAuth();
   const hasAdminHomeAccess = isSuperAdmin ||
     profile?.name?.trim().toLowerCase() === "admin" ||
     roles.some((role) => role.trim().toLowerCase() === "admin");
@@ -74,6 +82,20 @@ export default function HomePage() {
   const [homepageName, setHomepageName] = React.useState("Standard");
   const [homepageLayouts, setHomepageLayouts] = React.useState<HomepageWidgetLayout[] | null>(null);
   const requestedHomepageId = searchParams.get("homepage");
+
+  React.useEffect(() => {
+    if (authLoading || requestedHomepageId || !profile?.id || !profile.name) return;
+    const profileSlug = profile.name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    const profileParams = new URLSearchParams({
+      profileId: profile.id,
+      profileLabel: profile.name,
+    });
+    router.replace(`/profiles/${profileSlug}?${profileParams}`);
+  }, [authLoading, profile?.id, profile?.name, requestedHomepageId, router]);
 
   const fetchDashboardData = React.useCallback(async (homepageId: string | null, isCurrent: () => boolean = () => true) => {
     setIsLoading(true);
@@ -256,6 +278,10 @@ export default function HomePage() {
     (height, layout) => Math.max(height, layout.y + layout.height + 24),
     720,
   ) ?? 0;
+
+  if (!authLoading && !requestedHomepageId && profile?.id && profile.name) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">

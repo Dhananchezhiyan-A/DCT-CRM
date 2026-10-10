@@ -8,6 +8,8 @@ const database = vi.hoisted(() => ({
   leadFindMany: vi.fn(),
   leadFindUnique: vi.fn(),
   projectFindFirst: vi.fn(),
+  objectDefinitionFindFirst: vi.fn(),
+  fieldDefinitionFindMany: vi.fn(),
   sequenceUpsert: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -25,6 +27,8 @@ vi.mock('@dct-crm/db', () => ({
       findMany: database.leadFindMany,
       findUnique: database.leadFindUnique,
     },
+    objectDefinition: { findFirst: database.objectDefinitionFindFirst },
+    fieldDefinition: { findMany: database.fieldDefinitionFindMany },
     $transaction: database.transaction,
   },
 }));
@@ -69,6 +73,7 @@ vi.mock('../services/leadWorkflowExtras', () => ({
 
 vi.mock('../services/rrQueue', () => ({
   findApplicableRRQueue: rrQueue.findApplicableRRQueue,
+  assignLeadToProjectRoundRobinInTransaction: rrQueue.assignLeadInTransaction,
   hasLeadAssignmentRelevantChanges: vi.fn(),
   isLeadEligibleForAutoAssignment: () => true,
   RoundRobinAssignmentService: {
@@ -126,6 +131,8 @@ beforeEach(() => {
     owner: { id: 'svc-a', firstName: 'SVC', lastName: 'User' },
   });
   database.projectFindFirst.mockResolvedValue(null);
+  database.objectDefinitionFindFirst.mockResolvedValue(null);
+  database.fieldDefinitionFindMany.mockResolvedValue([]);
   database.leadFindMany.mockResolvedValue([]);
   database.transaction.mockImplementation((callback: (tx: unknown) => Promise<unknown>) =>
     callback({
@@ -134,10 +141,19 @@ beforeEach(() => {
         findFirst: database.leadFindFirst,
         findMany: database.leadFindMany,
         findUnique: database.leadFindUnique,
+        findUniqueOrThrow: database.leadFindUnique,
       },
-      project: { findFirst: database.projectFindFirst },
+      fieldDefinition: { findMany: vi.fn().mockResolvedValue([]) },
       sequence: { upsert: database.sequenceUpsert },
       auditLog: { create: vi.fn() },
+      project: { findFirst: database.projectFindFirst },
+      enquiry: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: 'enquiry-1' }),
+      },
+      tenant: { findUnique: vi.fn().mockResolvedValue(null) },
+      siteVisit: { create: vi.fn() },
+      $queryRaw: vi.fn().mockResolvedValue([]),
     }),
   );
   database.sequenceUpsert.mockResolvedValue({ nextValue: 1 });
@@ -231,8 +247,10 @@ describe('POST /api/leads Round Robin assignment', () => {
       owner: { id: 'admin-a', firstName: 'Admin', lastName: 'User' },
     };
     database.leadCreate.mockResolvedValue(createdLead);
+    database.leadFindUnique.mockResolvedValue(createdLead);
+    database.projectFindFirst.mockResolvedValue({ id: 'project-a' });
     rrQueue.findApplicableRRQueue.mockResolvedValue({ id: 'queue-a' });
-    rrQueue.assignLeadInTransaction.mockRejectedValue(new Error('NO_ELIGIBLE_USER'));
+    rrQueue.assignLeadInTransaction.mockRejectedValue(new Error('NO_ELIGIBLE_RR_MEMBER:Pre Sales'));
 
     const app = express();
     app.use(express.json());
@@ -259,9 +277,9 @@ describe('POST /api/leads Round Robin assignment', () => {
     expect(database.leadCreate).toHaveBeenCalledOnce();
     expect(body).toMatchObject({
       success: true,
+      warning: expect.stringContaining('No eligible Pre Sales user'),
       data: {
         id: 'lead-new',
-        assignmentWarning: expect.stringContaining('no eligible Sales user'),
       },
     });
   });

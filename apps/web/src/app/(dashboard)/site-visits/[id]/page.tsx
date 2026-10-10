@@ -9,8 +9,8 @@ import { useParams, useRouter } from "next/navigation";
 
 import Link from "next/link";
 
-import { siteVisitApi } from "@/lib/api";
-import { getCurrentCoordinates } from "@/lib/geolocation";
+import { leadApi, siteVisitApi } from "@/lib/api";
+import { getCurrentCoordinates, getGeolocationPermission, getLocationSettingsInstructions } from "@/lib/geolocation";
 
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
@@ -63,7 +63,7 @@ interface SiteVisitData {
   updatedAt: string;
   lead?: { id: string; leadNumber?: string | null; firstName: string; lastName: string; phone?: string | null; company?: string | null; email?: string | null; status?: string; owner?: { firstName: string; lastName: string; email?: string | null; profile?: { name: string } | null } | null };
   leadName?: string;
-  project?: { id: string; name: string };
+  project?: { id: string; name: string; allowedRadiusMeters?: number };
   projectName?: string;
   assignee?: { id: string; firstName: string; lastName: string };
   creator?: { id: string; firstName: string; lastName: string; email?: string; profile?: { name: string } | null };
@@ -110,7 +110,7 @@ export default function SiteVisitDetailPage() {
   const params = useParams();
   const router = useRouter();
   const { toast } = useToast();
-  const { user, profile } = useAuth();
+  const { user, profile, hasEffectivePermission } = useAuth();
   const [siteVisit, setSiteVisit] = React.useState<SiteVisitData | null>(null);
   const [isLoading, setIsLoading] = React.useState(true);
   const [activeTab, setActiveTab] = React.useState("details");
@@ -118,6 +118,12 @@ export default function SiteVisitDetailPage() {
   const [cancelDialogOpen, setCancelDialogOpen] = React.useState(false);
   const [cancelReason, setCancelReason] = React.useState("");
   const [completeDialogOpen, setCompleteDialogOpen] = React.useState(false);
+  const [locationAccessDialogOpen, setLocationAccessDialogOpen] = React.useState(false);
+  const [locationDialogState, setLocationDialogState] = React.useState<"denied" | "unavailable" | "outside" | "inaccurate" | "error" | null>(null);
+  const [locationFailure, setLocationFailure] = React.useState("");
+  const [locationInstructions, setLocationInstructions] = React.useState("");
+  const [isCheckingLocationPermission, setIsCheckingLocationPermission] = React.useState(false);
+  const [outsideLocation, setOutsideLocation] = React.useState<{ distanceMeters: number; radiusMeters: number; projectName: string } | null>(null);
   const [completionTime, setCompletionTime] = React.useState("");
   const [customerFeedback, setCustomerFeedback] = React.useState("");
   const [completionNotes, setCompletionNotes] = React.useState("");
@@ -152,22 +158,96 @@ export default function SiteVisitDetailPage() {
       toast({ title: "Validation", description: "Completion time, customer feedback, and notes are required", variant: "destructive" as any });
       return;
     }
+    setLocationFailure("");
+    setOutsideLocation(null);
+    await requestAndVerifySiteVisitLocation();
+  };
+
+  const requestAndVerifySiteVisitLocation = async () => {
     setIsActionLoading(true);
     try {
       const coordinates = await getCurrentCoordinates();
-      const res = await siteVisitApi.complete(params.id as string, {
+      await siteVisitApi.verifyLocation(params.id as string, coordinates);
+      const response = await siteVisitApi.complete(params.id as string, {
         completedAt: crmLocalDateTimeToDate(completionTime.split("T")[0], completionTime.split("T")[1]).toISOString(),
         customerFeedback: customerFeedback.trim(),
         completionNotes: completionNotes.trim(),
         ...coordinates,
       });
-      if (res.data.success) {
-        toast({ title: "Success", description: "Site visit marked as happened" });
+      if (response.data.success) {
+        setLocationAccessDialogOpen(false);
+        setLocationDialogState(null);
+        setLocationInstructions("");
+        setOutsideLocation(null);
+        toast({ title: "Success", description: "Site visit completed successfully." });
         setCompleteDialogOpen(false);
         await fetchSiteVisit();
       }
+      setLocationFailure("");
     } catch (err: any) {
-      toast({ title: "Error", description: err?.response?.data?.error || err?.message || "Failed to complete site visit", variant: "destructive" as any });
+      const code = err?.response?.data?.code;
+      setLocationFailure(err?.response?.data?.error || err?.message || "Failed to verify your location");
+      const failureData = err?.response?.data?.data;
+      if (code === "OUTSIDE_RADIUS" && Number.isFinite(failureData?.distanceMeters)) {
+        setOutsideLocation({
+          distanceMeters: failureData.distanceMeters,
+          radiusMeters: failureData.radiusMeters,
+          projectName: failureData.projectName || (siteVisit ? deriveProjectName(siteVisit) : "the project"),
+        });
+      } else {
+        setOutsideLocation(null);
+      }
+      const permissionBlocked = err?.code === 1;
+      const locationUnavailable = err?.code === 2;
+      setLocationAccessDialogOpen(permissionBlocked || locationUnavailable);
+      if (permissionBlocked) {
+        setLocationInstructions(`The browser still reports Location as blocked. This page cannot change that setting. ${getLocationSettingsInstructions(navigator.userAgent)}`);
+      } else if (locationUnavailable) {
+        setLocationInstructions("Browser permission may be allowed, but the device did not provide a location. Turn on device Location Services and allow your browser to use location, then retry.");
+      }
+      setLocationDialogState(
+        permissionBlocked ? "denied"
+          : locationUnavailable ? "unavailable"
+          : code === "OUTSIDE_RADIUS" ? "outside"
+            : code === "INACCURATE" ? "inaccurate"
+              : "error",
+      );
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleAllowLocation = async () => {
+    setIsCheckingLocationPermission(true);
+    try {
+      const permission = await getGeolocationPermission();
+      if (permission === "granted") {
+        setLocationInstructions("The browser confirms Location is allowed. Close this message and select Complete Site Visit to get a fresh position. If GPS is unavailable, enable Location Services in your device settings.");
+      } else if (permission === "prompt") {
+        setLocationInstructions("Location permission is not decided yet. Close this message and select Complete Site Visit to open the browser's normal permission prompt.");
+      } else {
+        setLocationInstructions(`The browser currently reports Location as blocked. This page cannot change that setting. ${getLocationSettingsInstructions(navigator.userAgent)}`);
+      }
+    } finally {
+      setIsCheckingLocationPermission(false);
+    }
+  };
+
+  const handleConvertLead = async () => {
+    if (!siteVisit?.lead || !hasEffectivePermission("OPPORTUNITY_CREATE")) return;
+    setIsActionLoading(true);
+    try {
+      const leadName = `${siteVisit.lead.firstName} ${siteVisit.lead.lastName}`.trim();
+      const response = await leadApi.convert(siteVisit.lead.id, {
+        name: `${siteVisit.lead.company || leadName} Opportunity`,
+        projectId: siteVisit.project?.id,
+      });
+      const opportunity = response.data.data?.opportunity;
+      if (!opportunity?.id) throw new Error("Opportunity was not returned by the server");
+      toast({ title: "Lead converted", description: "Opportunity created successfully" });
+      router.push("/opportunities");
+    } catch (err: any) {
+      toast({ title: "Error", description: err?.response?.data?.error || err?.message || "Failed to convert lead", variant: "destructive" as any });
     } finally {
       setIsActionLoading(false);
     }
@@ -297,10 +377,17 @@ export default function SiteVisitDetailPage() {
             </>
           )}
           {status === "COMPLETED" && (
-            <Button variant="outline" onClick={() => setRevisitDialogOpen(true)} disabled={isActionLoading}>
-              <Clock className="mr-2 h-4 w-4" />
-              Revisit
-            </Button>
+            <>
+              {siteVisit.lead?.status === "SITE_VISIT_HAPPENED" && hasEffectivePermission("OPPORTUNITY_CREATE") && (
+                <Button onClick={handleConvertLead} disabled={isActionLoading}>
+                  {isActionLoading ? "Converting..." : "Convert"}
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => setRevisitDialogOpen(true)} disabled={isActionLoading}>
+                <Clock className="mr-2 h-4 w-4" />
+                Revisit
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -553,11 +640,11 @@ export default function SiteVisitDetailPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={completeDialogOpen} onOpenChange={setCompleteDialogOpen}>
+      <Dialog open={completeDialogOpen && !locationAccessDialogOpen} onOpenChange={setCompleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Complete Site Visit</DialogTitle>
-            <DialogDescription>Completion time, customer feedback, and notes are required. Your device location is checked once against the project site — the visit only completes within 100 metres.</DialogDescription>
+            <DialogDescription>Completion time, customer feedback, and notes are required. Location access is also required, and you must be within {siteVisit.project?.allowedRadiusMeters || 100} meters of the project. To avoid repeated prompts, choose Allow while visiting this site or set Location to Allow in your browser settings.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
@@ -572,6 +659,26 @@ export default function SiteVisitDetailPage() {
               <Label htmlFor="site-visit-completion-notes">Notes *</Label>
               <Textarea id="site-visit-completion-notes" value={completionNotes} onChange={(event) => setCompletionNotes(event.target.value)} />
             </div>
+            {locationDialogState && locationDialogState !== "denied" && (
+              <div role="alert" className="flex flex-col gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between">
+                <p className="min-w-0">
+                  <span aria-hidden="true">⚠ </span>
+                  {locationDialogState === "outside"
+                    ? locationFailure || "Site Visit cannot be completed. You are not at the required location."
+                    : locationFailure}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleComplete()}
+                  disabled={isActionLoading}
+                  className="shrink-0 border-red-300 text-red-800 hover:bg-red-100"
+                >
+                  {isActionLoading ? "Checking..." : "Check Location Again"}
+                </Button>
+              </div>
+            )}
             <div className="rounded-md border bg-muted/30 p-3 text-sm">
               <p className="font-medium">Completed By</p>
               <p className="text-muted-foreground">{user ? `${user.firstName} ${user.lastName}` : "Authenticated user"}</p>
@@ -581,7 +688,51 @@ export default function SiteVisitDetailPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setCompleteDialogOpen(false)} disabled={isActionLoading}>Cancel</Button>
             <Button onClick={handleComplete} disabled={isActionLoading || !completionTime || !customerFeedback.trim() || !completionNotes.trim()}>
-              {isActionLoading ? "Completing..." : "Complete Site Visit"}
+              {isActionLoading ? "Checking Location..." : "Complete Site Visit"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={locationAccessDialogOpen}
+        onOpenChange={(open) => {
+          if (isActionLoading) return;
+          setLocationAccessDialogOpen(open);
+          if (!open) {
+            setLocationDialogState(null);
+            setLocationInstructions("");
+          }
+        }}
+      >
+        <DialogContent showClose={false}>
+          <DialogHeader>
+            <DialogTitle>Location Access Required</DialogTitle>
+            <DialogDescription>
+              {locationDialogState === "unavailable"
+                ? "Your device could not provide a location. Enable device Location Services and allow your browser to access location to complete this site visit."
+                : "Your location access is blocked. Enable location permission in your browser settings to complete this site visit."}
+            </DialogDescription>
+          </DialogHeader>
+          {locationInstructions && (
+            <p role="status" className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+              {locationInstructions}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => void handleAllowLocation()} disabled={isActionLoading || isCheckingLocationPermission}>
+              {isCheckingLocationPermission ? "Checking Permission..." : "Allow Location"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLocationAccessDialogOpen(false);
+                setLocationDialogState(null);
+                setLocationInstructions("");
+              }}
+              disabled={isActionLoading || isCheckingLocationPermission}
+            >
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -94,6 +94,7 @@ export async function normalizeOverdueSiteVisits(tenantId: string): Promise<void
       id: true,
       leadId: true,
       scheduledAt: true,
+      projectId: true,
       lead: { select: { id: true, status: true } },
     },
   });

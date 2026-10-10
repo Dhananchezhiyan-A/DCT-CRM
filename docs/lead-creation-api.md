@@ -141,13 +141,10 @@ The actual response does not expose passwords, JWTs, or integration secrets.
 
 ## Assignment and workflow
 
-Creation always uses the existing Presales Round Robin service. It selects
-active, eligible, same-tenant members using the current load-balanced
-assignment and persistent cursor tie-breaker. If no eligible member exists, the
-existing same-tenant Admin fallback is used.
-
-The route records Owner History and AuditLog entries and always starts the Lead
-at `NEW`. Later status changes remain controlled by the existing workflow.
+Creation assigns the authenticated user as the Lead owner, records Owner
+History and AuditLog entries, and starts the Lead at `NEW`. Leads are not
+automatically assigned through a queue. Later status changes remain controlled
+by the existing workflow.
 
 ## Duplicate handling
 

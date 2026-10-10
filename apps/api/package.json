@@ -10,7 +10,8 @@
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backfill:project-locations": "tsx src/scripts/backfillProjectLocationNames.ts"
   },
   "dependencies": {
     "@dct-crm/db": "*",

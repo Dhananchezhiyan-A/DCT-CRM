@@ -65,7 +65,6 @@ describe('leadUpdateSchema', () => {
       lastName: 'Dup',
       tenantId: 'tenant-1',
       creatorId: 'creator-1',
-      rrQueueId: 'queue-1',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       siteVisits: [],

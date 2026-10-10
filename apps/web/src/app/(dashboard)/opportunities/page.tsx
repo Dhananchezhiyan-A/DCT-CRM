@@ -66,6 +66,26 @@ const listColumns: ColumnDef<Opportunity>[] = [
     ),
   },
   {
+    accessorKey: "unitNumber",
+    header: "Unit",
+  },
+  {
+    accessorKey: "leadName",
+    header: "Contact",
+  },
+  {
+    accessorKey: "leadPhone",
+    header: "Mobile",
+  },
+  {
+    accessorKey: "leadEmail",
+    header: "Email",
+  },
+  {
+    accessorKey: "projectName",
+    header: "Project",
+  },
+  {
     id: "greRegistration",
     header: "GRE Registration",
     cell: ({ row }) => {
@@ -144,7 +164,7 @@ export default function OpportunitiesPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { hasEffectivePermission } = useAuth();
-  const [view, setView] = React.useState<"pipeline" | "list">("pipeline");
+  const [view, setView] = React.useState<"pipeline" | "list">("list");
   const [currentPage, setCurrentPage] = React.useState(1);
   const [opportunities, setOpportunities] = React.useState<Opportunity[]>([]);
   const [totalItems, setTotalItems] = React.useState(0);
@@ -156,7 +176,16 @@ export default function OpportunitiesPage() {
         setIsLoading(true);
         const res = await opportunityApi.list({ page: currentPage, limit: 20 });
         if (res.data.success && res.data.data) {
-          const mapped = res.data.data.map(mapOpportunity);
+          const mapped = res.data.data.map((item: any) => ({
+            ...mapOpportunity(item),
+            unitNumber: item.unit?.number || item.bookings?.[0]?.unit?.number || "—",
+            leadName: item.lead
+              ? `${item.lead.firstName || ""} ${item.lead.lastName || ""}`.trim() || "—"
+              : "—",
+            leadPhone: item.lead?.phone || "—",
+            leadEmail: item.lead?.email || "—",
+            projectName: item.project?.name || "—",
+          }));
           setOpportunities(mapped);
           setTotalItems(res.data.pagination?.total ?? mapped.length);
         } else {

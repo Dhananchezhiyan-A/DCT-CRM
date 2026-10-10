@@ -6,8 +6,7 @@ import { prisma } from '@dct-crm/db';
 import { GreSessionStatus, Industry, LeadStatus, Prisma, SiteVisitStatus } from '@prisma/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { getNextSiteVisitNumber } from '../services/leadWorkflowExtras';
-import { createOwnerHistory } from '../services/ownerHistory';
-import { findApplicableRRQueue, getReusableSiteVisitOwner, isNewProjectSiteVisit, isSiteVisitRevisit, RoundRobinAssignmentService } from '../services/rrQueue';
+import { assignCompletedSiteVisitToSalesInTransaction } from '../services/rrQueue';
 
 const router = Router();
 const publicRouter = Router();
@@ -141,6 +140,9 @@ const publicLeadSelect = {
   preferredLocation: true,
   occupation: true,
   gender: true,
+  city: true,
+  stateProvince: true,
+  country: true,
   projectId: true,
   project: { select: { id: true, name: true, city: true } },
   siteVisits: { select: { projectId: true, status: true, scheduledAt: true, visitType: true } },
@@ -203,7 +205,7 @@ export function phoneSearchVariants(normalizedPhone: string, countryCode: string
 }
 
 async function findMatchingLeads(
-  client: Pick<typeof prisma, 'lead'>,
+  client: Pick<typeof prisma, 'lead' | 'siteVisit'>,
   tenantId: string,
   phone: string,
   countryCode: string | null,
@@ -220,10 +222,48 @@ async function findMatchingLeads(
       ...publicLeadSelect,
     },
   });
-  return leads.filter((lead) =>
+  const matches = leads.filter((lead) =>
     [lead.phone, lead.mobile, lead.secondaryPhone, lead.tertiaryPhone]
       .some((candidate) => normalizeStoredPhone(candidate, countryCode) === phone),
   );
+  if (matches.length === 0) return matches;
+
+  const visitsByLead = await getScheduledSiteVisits(client, tenantId, matches.map((lead) => lead.id));
+  return matches.map((lead) => ({
+    ...lead,
+    scheduledSiteVisits: visitsByLead.get(lead.id) || [],
+  }));
+}
+
+async function getScheduledSiteVisits(
+  client: Pick<typeof prisma, 'siteVisit'>,
+  tenantId: string,
+  leadIds: string[],
+) {
+  const scheduledSiteVisits = await client.siteVisit.findMany({
+    where: { tenantId, leadId: { in: leadIds }, status: 'SCHEDULED' },
+    orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'asc' }],
+    select: {
+      id: true,
+      leadId: true,
+      siteVisitNumber: true,
+      projectId: true,
+      project: { select: { name: true } },
+      scheduledAt: true,
+      visitType: true,
+      visitorCount: true,
+      transportRequired: true,
+      notes: true,
+      assignee: { select: { firstName: true, lastName: true } },
+    },
+  });
+  const visitsByLead = new Map<string, typeof scheduledSiteVisits>();
+  for (const visit of scheduledSiteVisits) {
+    const visits = visitsByLead.get(visit.leadId) || [];
+    visits.push(visit);
+    visitsByLead.set(visit.leadId, visits);
+  }
+  return visitsByLead;
 }
 
 function tokenHash(token: string): string {
@@ -415,6 +455,9 @@ publicRouter.get('/:token/session', async (req, res) => {
         select: publicLeadSelect,
       })
       : null;
+    const scheduledVisits = leadDetails
+      ? await getScheduledSiteVisits(prisma, context.form.tenantId, [leadDetails.id])
+      : new Map();
     res.json({
       success: true,
       data: {
@@ -423,7 +466,9 @@ publicRouter.get('/:token/session', async (req, res) => {
         countryCode: context.session.phoneCountryCode,
         phone: context.session.phone,
         leadExists: context.session.leadWasExisting,
-        leadDetails,
+        leadDetails: leadDetails
+          ? { ...leadDetails, scheduledSiteVisits: scheduledVisits.get(leadDetails.id) || [] }
+          : null,
         expiresAt: context.session.expiresAt,
       },
     });
@@ -458,6 +503,7 @@ publicRouter.put('/:token/session', async (req, res) => {
 });
 
 publicRouter.post('/:token/submit', async (req, res) => {
+  let submitStage = 'validating submission';
   try {
     const context = await getSession(req, res);
     if (!context) return;
@@ -494,6 +540,7 @@ publicRouter.post('/:token/submit', async (req, res) => {
     const normalizedGst = draft.company.gstNumber?.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
 
     const submitted = await prisma.$transaction(async (tx) => {
+      submitStage = 'starting submission transaction';
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${context.form.tenantId}:GRE:SESSION:${session.id}`}, 0))`;
       const currentSession = await tx.greSession.findUnique({
         where: { id: session.id },
@@ -511,28 +558,18 @@ publicRouter.post('/:token/submit', async (req, res) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${context.form.tenantId}:GRE:GST:${normalizedGst}`}, 0))`;
       }
 
+      submitStage = 'matching existing lead';
       const matchingLeads = await findMatchingLeads(tx, context.form.tenantId, phone, session.phoneCountryCode, session.phone);
       if (matchingLeads.length > 1) {
         throw Object.assign(new Error('We could not safely match this number to one CRM record. Please contact the team that shared this form.'), { statusCode: 409 });
       }
       const existingLead = matchingLeads[0] ?? null;
-      const existingLeadOwner = existingLead
-        ? await tx.lead.findFirst({
-          where: { id: existingLead.id, tenantId: context.form.tenantId },
-          select: {
-            ownerId: true,
-            source: true,
-            leadSubSource: true,
-            rating: true,
-            owner: { select: { profile: { select: { name: true } } } },
-          },
-        })
-        : null;
       if (!existingLead && !lastName) {
         throw Object.assign(new Error('Last name is required'), { statusCode: 400 });
       }
 
       let company: { id: string; name: string } | null = null;
+      submitStage = 'resolving company';
       if (existingLead?.companyId) {
         company = await tx.company.findFirst({
           where: { id: existingLead.companyId, tenantId: context.form.tenantId },
@@ -619,6 +656,7 @@ publicRouter.post('/:token/submit', async (req, res) => {
 
       let lead: { id: string; leadNumber: string | null };
       let leadStatusChanged = false;
+      submitStage = 'saving lead';
       if (existingLead) {
         const status = getGreLeadStatus(draft.siteVisit.required, existingLead.status);
         leadStatusChanged = status !== existingLead.status;
@@ -649,26 +687,17 @@ publicRouter.post('/:token/submit', async (req, res) => {
         });
       }
 
-      const latestLeadVisit = existingLead
-        ? await tx.siteVisit.findFirst({
-          where: { tenantId: context.form.tenantId, leadId: lead.id },
-          orderBy: { createdAt: 'desc' },
-          select: { projectId: true },
-        })
-        : null;
-      const newProjectVisit = isNewProjectSiteVisit(existingLead?.id ?? null, latestLeadVisit, selectedProjectId);
+      submitStage = 'finding scheduled site visit';
       const previousProjectVisit = existingLead
         ? await tx.siteVisit.findFirst({
           where: { tenantId: context.form.tenantId, leadId: lead.id, projectId: selectedProjectId },
           orderBy: [{ scheduledAt: 'desc' }, { createdAt: 'desc' }],
           select: {
             projectId: true,
-            assigneeId: true,
-            assignee: { select: { firstName: true, lastName: true, email: true } },
           },
         })
         : null;
-      const scheduledProjectVisits = existingLead && !newProjectVisit
+      const scheduledProjectVisits = existingLead
         ? await tx.siteVisit.findMany({
           where: {
             tenantId: context.form.tenantId,
@@ -695,20 +724,12 @@ publicRouter.post('/:token/submit', async (req, res) => {
         })
         : [];
       const scheduledVisitToComplete = selectScheduledVisitToComplete(scheduledProjectVisits, siteVisitAt!);
-      const reusableOwnerId = getReusableSiteVisitOwner(existingLead?.id ?? null, previousProjectVisit, selectedProjectId);
-      const isRevisit = isSiteVisitRevisit(existingLead?.id ?? null, previousProjectVisit, selectedProjectId)
+      const isRevisit = Boolean(
+        existingLead?.id && previousProjectVisit?.projectId === selectedProjectId,
+      )
         || Boolean(scheduledVisitToComplete);
       const siteVisitType = isRevisit ? 'REVISIT' : draft.siteVisit.visitType || undefined;
-      let rrQueue: Awaited<ReturnType<typeof findApplicableRRQueue>> = null;
-      const retainedOwnerId = newProjectVisit ? null : scheduledVisitToComplete?.assigneeId || reusableOwnerId;
-      if (!retainedOwnerId) {
-        rrQueue = await findApplicableRRQueue(context.form.tenantId, {
-          projectId: selectedProjectId,
-          status: 'NEW',
-          source: 'WEBSITE',
-          secondarySource: existingLead?.leadSubSource || draft.lead.leadSubSource || null,
-        }, tx);
-      }
+      const retainedOwnerId = scheduledVisitToComplete?.assigneeId ?? null;
 
       const siteVisitNotes = [
         `GRE registration: ${context.form.name}`,
@@ -726,6 +747,7 @@ publicRouter.post('/:token/submit', async (req, res) => {
         createdAt: true,
         assigneeId: true,
       } as const;
+      submitStage = 'saving completed site visit';
       const siteVisit = scheduledVisitToComplete
         ? await tx.siteVisit.update({
           where: { id: scheduledVisitToComplete.id },
@@ -747,121 +769,24 @@ publicRouter.post('/:token/submit', async (req, res) => {
           leadId: lead.id,
           projectId: draft.siteVisit.projectId,
           creatorId: context.form.createdById,
-          assigneeId: retainedOwnerId,
           siteVisitNumber: await getNextSiteVisitNumber(tx, context.form.tenantId),
           scheduledAt: siteVisitAt!,
           completedAt: siteVisitAt!,
+          completedById: context.form.createdById,
           status: 'COMPLETED',
           notes: siteVisitNotes,
           completionNotes: siteVisitNotes,
           visitorCount: draft.siteVisit.visitorCount ?? 1,
-          visitType: siteVisitType,
+          visitType: siteVisitType ?? null,
           transportRequired: draft.siteVisit.transportRequired ?? false,
         },
         select: siteVisitSelect,
       });
-      let assignment: {
-        queueId: string | null;
-        assignedUserId: string | null;
-        assignedUserName: string | null;
-        reused: boolean;
-        warning?: string;
-      };
-      if (siteVisit.assigneeId) {
-        assignment = {
-          queueId: null,
-          assignedUserId: siteVisit.assigneeId,
-          assignedUserName: [
-            scheduledVisitToComplete?.assignee?.firstName || previousProjectVisit?.assignee?.firstName,
-            scheduledVisitToComplete?.assignee?.lastName || previousProjectVisit?.assignee?.lastName,
-          ].filter(Boolean).join(' ').trim() || previousProjectVisit?.assignee?.email || 'Existing Site Visit Owner',
-          reused: true,
-        };
-      } else if (rrQueue) {
-        try {
-          assignment = {
-            ...await RoundRobinAssignmentService.assignSiteVisitInTransaction(
-              tx,
-              rrQueue.id,
-              siteVisit.id,
-              lead.id,
-              context.form.tenantId,
-            ),
-            reused: false,
-          };
-        } catch (error) {
-          if (!(error instanceof Error) || !['NO_ELIGIBLE_USER', 'RR_QUEUE_NOT_FOUND'].includes(error.message)) throw error;
-          assignment = {
-            queueId: rrQueue.id,
-            assignedUserId: null,
-            assignedUserName: null,
-            reused: false,
-            warning: 'The Site Visit was saved, but no active Sales user was available for assignment.',
-          };
-        }
-      } else {
-        assignment = {
-          queueId: null,
-          assignedUserId: null,
-          assignedUserName: null,
-          reused: false,
-          warning: 'The Site Visit was saved, but no active Round Robin queue matches this project and lead source.',
-        };
-      }
-      if (!existingLead) {
-        if (assignment.assignedUserId) {
-          await tx.lead.update({
-            where: { id: lead.id },
-            data: { ownerId: assignment.assignedUserId, rrQueueId: assignment.queueId },
-          });
-          await createOwnerHistory({
-            tenantId: context.form.tenantId,
-            leadId: lead.id,
-            previousOwnerId: null,
-            newOwnerId: assignment.assignedUserId,
-            previousProfile: null,
-            newProfile: null,
-            previousStatus: null,
-            newStatus: getGreLeadStatus(draft.siteVisit.required),
-            handoffReason: 'GRE initial Sales assignment',
-            changedById: context.form.createdById,
-          }, tx);
-        }
-      } else if (draft.siteVisit.required && existingLeadOwner?.owner?.profile?.name === 'SVC') {
-        const salesQueue = await findApplicableRRQueue(context.form.tenantId, {
-          projectId: selectedProjectId,
-          status: getGreLeadStatus(true, existingLead.status),
-          source: existingLeadOwner.source,
-          secondarySource: existingLeadOwner.leadSubSource,
-          priority: existingLeadOwner.rating,
-        }, tx);
-        if (!salesQueue) {
-          throw Object.assign(new Error('No Sales Round Robin queue matches this project.'), { statusCode: 503 });
-        }
-        const salesAssignment = await RoundRobinAssignmentService.assignLeadInTransaction(
-          tx,
-          salesQueue.id,
-          lead.id,
-          context.form.tenantId,
-        );
-        const salesOwner = await tx.user.findFirst({
-          where: { id: salesAssignment.assignedUserId, tenantId: context.form.tenantId },
-          select: { profile: { select: { name: true } } },
-        });
-        await createOwnerHistory({
-          tenantId: context.form.tenantId,
-          leadId: lead.id,
-          previousOwnerId: existingLeadOwner.ownerId,
-          newOwnerId: salesAssignment.assignedUserId,
-          previousProfile: 'SVC',
-          newProfile: salesOwner?.profile?.name || null,
-          previousStatus: existingLead.status,
-          newStatus: getGreLeadStatus(true, existingLead.status),
-          handoffReason: `GRE Site Visit completed for project ${selectedProjectId}`,
-          changedById: context.form.createdById,
-        }, tx);
-      }
-
+      submitStage = 'assigning completed site visit';
+      const salesHandoff = draft.siteVisit.required
+        ? await assignCompletedSiteVisitToSalesInTransaction(tx, siteVisit.id, context.form.tenantId)
+        : null;
+      submitStage = 'finalizing GRE submission';
       const seq = await tx.sequence.upsert({
         where: { tenantId_type: { tenantId: context.form.tenantId, type: 'GRE' } },
         update: { nextValue: { increment: 1 } },
@@ -895,14 +820,10 @@ publicRouter.post('/:token/submit', async (req, res) => {
           newValues: {
             greSessionId: session.id,
             referenceNumber,
-            companyId: existingLead?.companyId || company?.id,
+            companyId: existingLead?.companyId || company?.id || null,
             siteVisitId: siteVisit?.id,
             status: getGreLeadStatus(draft.siteVisit.required, existingLead?.status),
             leadStatusChanged,
-            rrQueueId: assignment.queueId,
-            siteVisitOwnerId: assignment.assignedUserId,
-            siteVisitOwnerReused: assignment.reused,
-            siteVisitAssignmentWarning: assignment.warning ?? null,
             siteVisitType: siteVisitType ?? null,
             siteVisitCategory: isRevisit ? 'REVISIT' : 'FIRST_VISIT',
             scheduledVisitCompleted: Boolean(scheduledVisitToComplete),
@@ -923,6 +844,7 @@ publicRouter.post('/:token/submit', async (req, res) => {
         });
       }
       if (siteVisit) {
+        submitStage = 'recording site visit audit';
         await tx.auditLog.create({
           data: {
             tenantId: context.form.tenantId,
@@ -935,13 +857,11 @@ publicRouter.post('/:token/submit', async (req, res) => {
               greSessionId: session.id,
               referenceNumber,
               status: siteVisit.status,
-              scheduledAt: siteVisit.scheduledAt,
-              completedAt: siteVisit.completedAt,
+              scheduledAt: siteVisit.scheduledAt.toISOString(),
+              completedAt: siteVisit.completedAt?.toISOString() ?? null,
               projectId: siteVisit.projectId,
-              assigneeId: assignment.assignedUserId,
-              assignedTo: assignment.assignedUserName,
-              roundRobinReused: assignment.reused,
-              visitType: siteVisitType,
+              assigneeId: siteVisit.assigneeId,
+              visitType: siteVisitType ?? null,
               visitCategory: isRevisit ? 'REVISIT' : 'FIRST_VISIT',
               scheduledVisitCompleted: Boolean(scheduledVisitToComplete),
             },
@@ -955,11 +875,7 @@ publicRouter.post('/:token/submit', async (req, res) => {
         leadId: lead.id,
         siteVisit,
         scheduledVisitCompleted: Boolean(scheduledVisitToComplete),
-        assignment: {
-          queueId: assignment.queueId,
-          assignedTo: assignment.assignedUserName,
-          warning: assignment.warning ?? null,
-        },
+        salesHandoff,
       };
     });
 
@@ -978,7 +894,7 @@ publicRouter.post('/:token/submit', async (req, res) => {
         leadId: submitted.leadId,
         leadWasExisting: submitted.leadWasExisting,
         scheduledVisitCompleted: submitted.scheduledVisitCompleted,
-        assignment: submitted.assignment,
+        salesHandoff: submitted.salesHandoff,
       },
     });
   } catch (error) {
@@ -986,20 +902,19 @@ publicRouter.post('/:token/submit', async (req, res) => {
     if (statusCode === 409 || statusCode === 400 || statusCode === 503) {
       return res.status(statusCode).json({ success: false, error: error instanceof Error ? error.message : 'Unable to submit GRE form' });
     }
-    if (error instanceof Error && error.message === 'NO_ELIGIBLE_USER') {
-      return res.status(503).json({ success: false, error: 'The matching Round Robin queue has no active Sales users. Please contact the CRM team before submitting.' });
-    }
-    if (error instanceof Error && error.message === 'PROJECT_RR_QUEUE_NOT_FOUND') {
-      return res.status(503).json({ success: false, error: 'No Sales Round Robin queue matches this project. Please contact the CRM team before submitting.' });
-    }
-    if (error instanceof Error && error.message === 'RR_QUEUE_NOT_FOUND') {
-      return res.status(503).json({ success: false, error: 'The matching Round Robin queue is no longer available. Please retry or contact the CRM team.' });
-    }
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       return res.status(409).json({ success: false, error: 'A matching phone number was submitted at the same time. Please retry the form.' });
     }
     console.error('Submit GRE form error:', error);
-    res.status(500).json({ success: false, error: 'Unable to submit your information. Please try again.' });
+    const response: { success: false; error: string; stage: string; detail?: string } = {
+      success: false,
+      error: 'Unable to submit your information. Please try again.',
+      stage: submitStage,
+    };
+    if (process.env.NODE_ENV !== 'production' && error instanceof Error) {
+      response.detail = `${submitStage}: ${error.message}`;
+    }
+    res.status(500).json(response);
   }
 });
 

@@ -51,6 +51,14 @@ vi.mock('@/contexts/auth-context', () => ({
 }));
 
 vi.mock('@/lib/api', () => ({
+  analyticsApi: {
+    getLeads: vi.fn().mockResolvedValue({ data: { data: { total: 0 } } }),
+    getOpportunities: vi.fn().mockResolvedValue({ data: { data: { total: 0 } } }),
+    getPipeline: vi.fn().mockResolvedValue({ data: { data: { totalPipeline: 0, stages: [] } } }),
+  },
+  taskApi: { list: vi.fn().mockResolvedValue({ data: { data: [] } }) },
+  activityApi: { list: vi.fn().mockResolvedValue({ data: { data: [] } }) },
+  opportunityApi: { list: vi.fn().mockResolvedValue({ data: { data: [] } }) },
   homepageApi: {
     list: vi.fn().mockResolvedValue({ data: [{ id: 'homepage-1', name: 'Executive Dashboard' }] }),
     assigned: vi.fn().mockResolvedValue({ data: [] }),

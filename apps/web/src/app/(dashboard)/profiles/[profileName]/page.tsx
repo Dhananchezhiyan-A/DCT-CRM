@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowLeft, Users, TrendingUp, Briefcase, FolderKanban, LayoutDashboard, FileText, CalendarCheck, Plus, ArrowRight, Pencil } from "lucide-react";
@@ -139,12 +139,53 @@ const formatTimeAgo = (value: string) => {
   return new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 };
 
+const profileHomeWidgets = [
+  { id: "total-leads", label: "Total Leads" },
+  { id: "opportunities", label: "Opportunities" },
+  { id: "pipeline-value", label: "Pipeline Value" },
+  { id: "active-tasks", label: "Active Tasks" },
+  { id: "recent-opportunities", label: "Recent Opportunities" },
+  { id: "pipeline-summary", label: "Pipeline Summary" },
+  { id: "upcoming-tasks", label: "Upcoming Tasks" },
+  { id: "recent-activity", label: "Recent Activity" },
+  { id: "leads-by-source", label: "Leads by Source" },
+  { id: "open-tasks", label: "Open Tasks" },
+  { id: "overdue-tasks", label: "Overdue Tasks" },
+  { id: "tasks-completed", label: "Tasks Completed" },
+  { id: "tasks-by-users", label: "Tasks by Users" },
+  { id: "calls-by-purpose", label: "Calls by Purpose" },
+  { id: "my-calls-today", label: "My Calls Today" },
+];
+
+const isProfileHomepageWidget = (id: unknown): id is string =>
+  typeof id === "string" && id.length > 0;
+
+function profileHomepageWidgetLabel(id: string) {
+  return profileHomeWidgets.find((widget) => widget.id === id)?.label ||
+    (id.startsWith("report-")
+      ? `Report ${id.slice("report-".length)}`
+      : id.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()));
+}
+
 export default function ProfileLandingPage() {
   const params = useParams<{ profileName: string }>();
-  const { hasPermission, isAdmin, isSuperAdmin } = useAuth();
+  const searchParams = useSearchParams();
+  const { hasPermission, isAdmin, isSuperAdmin, profile } = useAuth();
   const canEditProfileHome = isAdmin || isSuperAdmin;
+  const requestedProfileId = searchParams.get("profileId");
+  const requestedProfileLabel = searchParams.get("profileLabel");
   const [loading, setLoading] = React.useState(true);
-  const [homepageId, setHomepageId] = React.useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = React.useState<string | null>(requestedProfileId);
+  const [selectedHomepageId, setSelectedHomepageId] = React.useState<string | null>(null);
+  const [hasSavedHomepage, setHasSavedHomepage] = React.useState(false);
+  const [profileHomeLoading, setProfileHomeLoading] = React.useState(true);
+  const [selectedComponents, setSelectedComponents] = React.useState<string[]>(
+    profileHomeWidgets.map((widget) => widget.id),
+  );
+  const [savedLayouts, setSavedLayouts] = React.useState<
+    Record<string, { x: number; y: number; width: number; height: number }>
+  >({});
+  const [editError, setEditError] = React.useState("");
   const [kpis, setKpis] = React.useState<any[]>([]);
   const [recentOpportunities, setRecentOpportunities] = React.useState<any[]>([]);
   const [pipelineStages, setPipelineStages] = React.useState<any[]>([]);
@@ -155,51 +196,114 @@ export default function ProfileLandingPage() {
     title: "",
     description: "",
   });
-  const currentProfileKey = profileSlug((params.profileName || "").replace(/-/g, " "));
-  const shouldShowProfileEditButton = isAdmin && ["pre-sales", "sales", "svc", "standard", "standard-user"].includes(currentProfileKey);
-  const profileEditHref = homepageId
-    ? `/admin/customize-home/${encodeURIComponent(homepageId)}?profile=${encodeURIComponent(localPage.title)}`
-    : `/admin/customize-home/create?profile=${encodeURIComponent(localPage.title)}`;
+  const profileEditParams = new URLSearchParams({ profile: localPage.title });
+  if (selectedProfileId) profileEditParams.set("profileId", selectedProfileId);
+  if (selectedHomepageId) profileEditParams.set("homepageId", selectedHomepageId);
+  const profileEditHref = `/admin/customize-home/create?${profileEditParams}`;
 
   React.useEffect(() => {
-    const rawName = (params.profileName || "").replace(/-/g, " ");
+    const rawName = requestedProfileLabel || (params.profileName || "").replace(/-/g, " ");
     const key = normalizeProfileKey(rawName);
     const knownConfig = profileConfig[key] || profileConfig[params.profileName || ""];
 
     const defaultTitle = knownConfig?.title || rawName || "Profile";
     const defaultDescription = knownConfig?.description || "Profile overview and operational summary.";
 
-    setLocalPage({
+    const page = {
       title: defaultTitle,
       description: defaultDescription,
-    });
+    };
+    setLocalPage(page);
 
     setLoading(false);
-  }, [params.profileName]);
+  }, [params.profileName, requestedProfileLabel]);
 
   React.useEffect(() => {
-    if (!canEditProfileHome) return;
     let active = true;
-    Promise.all([profileApi.list(), homepageApi.list()])
+    setProfileHomeLoading(true);
+    const viewingAssignedProfile =
+      Boolean(profile?.id) &&
+      (!canEditProfileHome ||
+        !requestedProfileId ||
+        requestedProfileId === profile?.id);
+    Promise.all([
+      viewingAssignedProfile || requestedProfileId
+        ? Promise.resolve(null)
+        : canEditProfileHome
+          ? profileApi.list({ limit: 100 })
+          : Promise.resolve(null),
+      viewingAssignedProfile && profile?.id
+        ? homepageApi.assigned()
+        : homepageApi.list(),
+    ])
       .then(([profilesResponse, homepagesResponse]) => {
         const profileName = profileSlug((params.profileName || "").replace(/-/g, " "));
-        const selectedProfile = responseItems(profilesResponse).find(
-          (profile: any) => profileSlug(profile.name || "") === profileName,
+        const selectedProfile = viewingAssignedProfile && profile?.id
+          ? profile
+          : requestedProfileId
+            ? { id: requestedProfileId, name: requestedProfileLabel || localPage.title }
+            : responseItems(profilesResponse).find(
+                (profile: any) => profileSlug(profile.name || "") === profileName,
+              );
+        const homepageResponseData =
+          homepagesResponse?.data?.data ?? homepagesResponse?.data;
+        const homepage = viewingAssignedProfile && profile?.id
+          ? homepageResponseData
+          : selectedProfile && responseItems(homepagesResponse).find((item: any) =>
+              (item.sharedProfiles || []).some(
+                (share: any) => (share.profile?.id || share.profileId) === selectedProfile.id,
+              ),
+            );
+        const savedLayout = Array.isArray(homepage?.layout) ? homepage.layout : [];
+        const savedComponentIds = savedLayout
+          .map((item: any) => typeof item === "string" ? item : item?.id)
+          .filter(isProfileHomepageWidget);
+        const savedLayoutById = Object.fromEntries(
+          savedLayout
+            .filter((item: any) =>
+              typeof item !== "string" &&
+              isProfileHomepageWidget(item.id) &&
+              [item.x, item.y, item.width, item.height].every(Number.isFinite),
+            )
+            .map((item: any) => [item.id, item]),
         );
-        const homepage = selectedProfile && responseItems(homepagesResponse).find((item: any) =>
-          (item.sharedProfiles || []).some(
-            (share: any) => (share.profile?.id || share.profileId) === selectedProfile.id,
-          ),
-        );
-        if (active) setHomepageId(homepage?.id || null);
+        if (active) {
+          setSelectedProfileId(selectedProfile?.id || null);
+          setSelectedHomepageId(homepage?.id || null);
+          setHasSavedHomepage(Boolean(homepage && savedComponentIds.length));
+          setSavedLayouts(savedLayoutById);
+          setEditError(selectedProfile ? "" : "Unable to find this profile in Setup Home → Profiles.");
+          setSelectedComponents(homepage && savedComponentIds.length
+            ? savedComponentIds
+            : profileHomeWidgets.map((widget) => widget.id));
+          if (selectedProfile?.name) {
+            const page = {
+              title: selectedProfile.name,
+              description: homepage?.description ?? "Profile overview and operational summary.",
+            };
+            setLocalPage(page);
+          }
+        }
       })
       .catch(() => {
-        if (active) setHomepageId(null);
+        if (active) {
+          setEditError("Unable to load this profile's homepage settings.");
+        }
+      })
+      .finally(() => {
+        if (active) setProfileHomeLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [canEditProfileHome, params.profileName]);
+  }, [
+    canEditProfileHome,
+    params.profileName,
+    profile?.id,
+    profile?.name,
+    requestedProfileId,
+    requestedProfileLabel,
+  ]);
 
   React.useEffect(() => {
     let active = true;
@@ -257,6 +361,139 @@ export default function ProfileLandingPage() {
     };
   }, []);
 
+  const getEditableWidgetContent = (id: string) => {
+    const kpi = kpis.find((item) => {
+      const widgetIds: Record<string, string> = {
+        "Total Leads": "total-leads",
+        Opportunities: "opportunities",
+        "Pipeline Value": "pipeline-value",
+        "Active Tasks": "active-tasks",
+      };
+      return widgetIds[item.label] === id;
+    });
+    if (kpi) {
+      const Icon = kpi.icon || getModuleIcon(kpi.label);
+      return (
+        <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">{kpi.label}</div>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+              <Icon className="h-5 w-5" />
+            </div>
+          </div>
+          <div className="mt-4 text-xl font-bold tracking-tight text-slate-800">{kpi.value}</div>
+        </div>
+      );
+    }
+
+    if (id === "recent-opportunities") {
+      return (
+        <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
+          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Recent Opportunities</h2>
+          {recentOpportunities.length === 0 ? (
+            <div className="flex min-h-[120px] items-center justify-center text-muted-foreground">No recent opportunities</div>
+          ) : (
+            <div className="space-y-3">
+              {recentOpportunities.map((opp: any) => (
+                <div key={opp.id} className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">
+                  <div>
+                    <div className="font-medium text-slate-800">{opp.name || "Untitled Opportunity"}</div>
+                    <div className="text-sm uppercase tracking-wide text-muted-foreground">{opp.stage || "—"}</div>
+                  </div>
+                  <div className="font-semibold text-slate-800">{formatAmount(opp.amount || 0)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    if (id === "pipeline-summary") {
+      return (
+        <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
+          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Pipeline Summary</h2>
+          <div className="space-y-4">
+            {pipelineStages.length === 0 ? (
+              <div className="flex min-h-[120px] items-center justify-center text-muted-foreground">No pipeline data</div>
+            ) : pipelineStages.map((stage) => (
+              <div key={stage.stage} className="space-y-2">
+                <div className="flex items-center justify-between text-sm text-slate-700">
+                  <span className="capitalize">{stage.stage.toLowerCase().replace(/_/g, " ")}</span>
+                  <span>{stage.count} • {formatAmount(stage.amount)}</span>
+                </div>
+                <div className="h-2.5 rounded-full bg-slate-200">
+                  <div className="h-2.5 rounded-full bg-blue-500" style={{ width: `${Math.min(100, Math.max(8, stage.count * 20))}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    if (id === "upcoming-tasks") {
+      return (
+        <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
+          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Upcoming Tasks</h2>
+          {upcomingTasks.length === 0 ? (
+            <div className="flex min-h-[170px] items-center justify-center text-muted-foreground">No upcoming tasks</div>
+          ) : (
+            <div className="space-y-3">
+              {upcomingTasks.map((task: any) => (
+                <div key={task.id} className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">
+                  <div>
+                    <div className="font-medium text-slate-800">{task.title || "Untitled Task"}</div>
+                    <div className="text-sm uppercase tracking-wide text-muted-foreground">{task.status || "—"}</div>
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    {task.dueDate ? new Date(task.dueDate).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "No due date"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    if (id === "recent-activity") return (
+      <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
+        <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Recent Activity</h2>
+        {recentActivities.length === 0 ? (
+          <div className="flex min-h-[170px] items-center justify-center text-muted-foreground">No recent activity</div>
+        ) : (
+          <div className="space-y-3">
+            {recentActivities.map((activity: any) => (
+              <div key={activity.id} className="rounded-lg border bg-muted/20 p-3">
+                <div className="text-sm font-medium text-slate-800">{activity.message || "Activity"}</div>
+                <div className="text-xs text-muted-foreground">
+                  {activity.type || "Update"} • {activity.createdAt ? formatTimeAgo(activity.createdAt) : "Now"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+    return (
+      <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-[16px] font-semibold tracking-tight">
+          {profileHomepageWidgetLabel(id)}
+        </h2>
+        {id.startsWith("report-") ? (
+          <Link
+            href={`/reports/${encodeURIComponent(id.slice("report-".length))}`}
+            className="text-sm font-medium text-blue-600 hover:underline"
+          >
+            Open report
+          </Link>
+        ) : (
+          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+            Dashboard component
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -296,20 +533,23 @@ export default function ProfileLandingPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          {shouldShowProfileEditButton && (
-            <Button variant="outline" asChild>
-              <Link href={profileEditHref}>
-                <Pencil className="mr-2 h-4 w-4" />
-                Edit
-              </Link>
-            </Button>
-          )}
-          {canEditProfileHome && homepageId && (
-            <Button variant="outline" asChild>
-              <Link href={`/admin/customize-home/${encodeURIComponent(homepageId)}?profile=${encodeURIComponent(localPage.title)}`}>
-                <Pencil className="mr-2 h-4 w-4" />
-                Edit Home Page
-              </Link>
+          {canEditProfileHome && (
+            <Button
+              variant="outline"
+              asChild={Boolean(selectedProfileId)}
+              disabled={!selectedProfileId}
+            >
+              {selectedProfileId ? (
+                <Link href={profileEditHref}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </Link>
+              ) : (
+                <span className="inline-flex items-center">
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </span>
+              )}
             </Button>
           )}
           <Button variant="outline" asChild>
@@ -333,15 +573,85 @@ export default function ProfileLandingPage() {
         </div>
       </div>
 
+      {editError && (
+        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {editError}
+        </p>
+      )}
+
+      {profileHomeLoading ? (
+        <div className="space-y-4" aria-label="Loading profile dashboard">
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+      ) : <>
+      {hasSavedHomepage && (
+      <div className="overflow-x-auto">
+        <div
+          className="grid gap-2 p-2"
+          data-testid="profile-homepage-layout"
+          style={{
+            width: "100%",
+            minWidth: "100%",
+            gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
+            gridAutoRows: 116,
+          }}
+        >
+          {selectedComponents.map((id, index) => {
+            const layout = savedLayouts[id];
+            const columnSpan = layout
+              ? Math.max(1, Math.min(12, Math.round((layout.width + 8) / 93)))
+              : 3;
+            const rowSpan = layout
+              ? Math.max(1, Math.round((layout.height + 8) / 124))
+              : 2;
+            const column = layout
+              ? Math.min(12 - columnSpan, Math.max(0, Math.round((layout.x - 8) / 93)))
+              : (index * 3) % 12;
+            const row = layout
+              ? Math.max(0, Math.round((layout.y - 8) / 124))
+              : Math.floor(index / 4) * 2;
+            return (
+              <div
+                key={id}
+                data-widget-id={id}
+                data-layout-x={layout?.x}
+                data-layout-y={layout?.y}
+                style={{
+                  gridColumn: `${column + 1} / span ${columnSpan}`,
+                  gridRow: `${row + 1} / span ${rowSpan}`,
+                  minWidth: 0,
+                }}
+              >
+                {getEditableWidgetContent(id)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      )}
+      {!hasSavedHomepage && selectedComponents.some((id) =>
+        ["total-leads", "opportunities", "pipeline-value", "active-tasks"].includes(id),
+      ) && (
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {kpis.length === 0
-          ? Array.from({ length: 4 }).map((_, index) => (
+          ? Array.from({ length: selectedComponents.filter((id) =>
+              ["total-leads", "opportunities", "pipeline-value", "active-tasks"].includes(id),
+            ).length }).map((_, index) => (
               <div key={index} className="rounded-lg border border-border bg-card p-4 shadow-sm">
                 <Skeleton className="h-4 w-24 mb-4" />
                 <Skeleton className="h-8 w-20" />
               </div>
             ))
-          : kpis.map((kpi) => {
+          : kpis.filter((kpi) => {
+              const widgetIds: Record<string, string> = {
+                "Total Leads": "total-leads",
+                Opportunities: "opportunities",
+                "Pipeline Value": "pipeline-value",
+                "Active Tasks": "active-tasks",
+              };
+              return selectedComponents.includes(widgetIds[kpi.label]);
+            }).map((kpi) => {
               const Icon = kpi.icon || getModuleIcon(kpi.label);
               return (
                 <div key={kpi.label} className="rounded-lg border border-border bg-card p-4 shadow-sm">
@@ -358,9 +668,12 @@ export default function ProfileLandingPage() {
               );
             })}
       </div>
+      )}
 
+      {!hasSavedHomepage && (selectedComponents.includes("recent-opportunities") || selectedComponents.includes("pipeline-summary")) && (
       <div className="grid gap-6 xl:grid-cols-3">
-        <div className="xl:col-span-2">
+        {selectedComponents.includes("recent-opportunities") && (
+        <div className={selectedComponents.includes("pipeline-summary") ? "xl:col-span-2" : "xl:col-span-3"}>
           <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-[16px] font-semibold tracking-tight">Recent Opportunities</h2>
@@ -391,8 +704,10 @@ export default function ProfileLandingPage() {
             </div>
           </div>
         </div>
+        )}
 
-        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+        {selectedComponents.includes("pipeline-summary") && (
+        <div className={selectedComponents.includes("recent-opportunities") ? "rounded-lg border border-border bg-card p-4 shadow-sm" : "xl:col-span-3 rounded-lg border border-border bg-card p-4 shadow-sm"}>
           <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Pipeline Summary</h2>
           <div className="space-y-4">
             {pipelineStages.length === 0 ? (
@@ -417,10 +732,14 @@ export default function ProfileLandingPage() {
             )}
           </div>
         </div>
+        )}
       </div>
+      )}
 
+      {!hasSavedHomepage && (selectedComponents.includes("upcoming-tasks") || selectedComponents.includes("recent-activity")) && (
       <div className="grid gap-6 xl:grid-cols-3">
-        <div className="xl:col-span-2 rounded-lg border border-border bg-card p-4 shadow-sm">
+        {selectedComponents.includes("upcoming-tasks") && (
+        <div className={selectedComponents.includes("recent-activity") ? "xl:col-span-2 rounded-lg border border-border bg-card p-4 shadow-sm" : "xl:col-span-3 rounded-lg border border-border bg-card p-4 shadow-sm"}>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-[16px] font-semibold tracking-tight">Upcoming Tasks</h2>
             <Link href="/tasks" className="text-sm font-medium text-blue-600">View All</Link>
@@ -447,8 +766,10 @@ export default function ProfileLandingPage() {
             </div>
           )}
         </div>
+        )}
 
-        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+        {selectedComponents.includes("recent-activity") && (
+        <div className={selectedComponents.includes("upcoming-tasks") ? "rounded-lg border border-border bg-card p-4 shadow-sm" : "xl:col-span-3 rounded-lg border border-border bg-card p-4 shadow-sm"}>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-[16px] font-semibold tracking-tight">Recent Activity</h2>
           </div>
@@ -467,7 +788,10 @@ export default function ProfileLandingPage() {
             </div>
           )}
         </div>
+        )}
       </div>
+      )}
+      </>}
     </div>
   );
 }

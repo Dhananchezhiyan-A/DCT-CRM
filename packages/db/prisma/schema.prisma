@@ -51,57 +51,63 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users                 User[]
-  roles                 Role[]
-  profiles              Profile[]
-  permissionSets        PermissionSet[]
-  newPermissionSets     NewPermissionSet[]
-  queues                Queue[]
-  auditLogs             AuditLog[]
-  reports               Report[]
-  reportFolders         ReportFolder[]
-  reportShares          ReportShare[]
-  reportFavorites       ReportFavorite[]
-  reportFolderShares    ReportFolderShare[]
-  reportFolderFavorites ReportFolderFavorite[]
+  users                    User[]
+  roles                    Role[]
+  profiles                 Profile[]
+  permissionSets           PermissionSet[]
+  newPermissionSets        NewPermissionSet[]
+  queues                   Queue[]
+  auditLogs                AuditLog[]
+  reports                  Report[]
+  reportFolders            ReportFolder[]
+  reportShares             ReportShare[]
+  reportFavorites          ReportFavorite[]
+  reportFolderShares       ReportFolderShare[]
+  reportFolderFavorites    ReportFolderFavorite[]
   dashboardFolders         DashboardFolder[]
   dashboardFolderFavorites DashboardFolderFavorite[]
-  dashboards            Dashboard[]
-  dashboardShares       DashboardShare[]
-  dashboardFavorites    DashboardFavorite[]
-  dashboardSubscriptions DashboardSubscription[]
-  workflows             Workflow[]
-  automations           Automation[]
-  notifications         Notification[]
-  leads                 Lead[]
-  companies             Company[]
-  enquiries             Enquiry[]
-  siteVisits            SiteVisit[]
-  opportunities         Opportunity[]
-  quotations            Quotation[]
-  approvals             Approval[]
-  bookings              Booking[]
-  payments              Payment[]
-  projects              Project[]
-  units                 Unit[]
-  tasks                 Task[]
-  followUps             FollowUp[]
-  activities            Activity[]
-  aiConversations       AIConversation[]
-  objectDefinitions     ObjectDefinition[]
-  customRecords         CustomRecord[]
-  permissionSetGroups   PermissionSetGroup[]
-  objectSharingSettings ObjectSharingSetting[]
-  sharingRules          SharingRule[]
-  recordShares          RecordShare[]
-  recordTeamMembers     RecordTeamMember[]
-  leadOwnerHistories    LeadOwnerHistory[]
-  sequences             Sequence[]
-  rrQueues              RRQueue[]              @relation("RRQueueTenant")
-  rrQueueMembers        RRQueueMember[]        @relation("RRQueueMemberTenant")
-  rrQueueHistory        RRQueueHistory[]       @relation("RRQueueHistoryTenant")
-  greForms              GreForm[]
-  greSessions           GreSession[]
+  dashboards               Dashboard[]
+  dashboardShares          DashboardShare[]
+  dashboardFavorites       DashboardFavorite[]
+  dashboardSubscriptions   DashboardSubscription[]
+  workflows                Workflow[]
+  automations              Automation[]
+  notifications            Notification[]
+  leads                    Lead[]
+  companies                Company[]
+  enquiries                Enquiry[]
+  siteVisits               SiteVisit[]
+  opportunities            Opportunity[]
+  quotations               Quotation[]
+  approvals                Approval[]
+  bookings                 Booking[]
+  payments                 Payment[]
+  projects                 Project[]
+  units                    Unit[]
+  tasks                    Task[]
+  followUps                FollowUp[]
+  activities               Activity[]
+  aiConversations          AIConversation[]
+  objectDefinitions        ObjectDefinition[]
+  customRecords            CustomRecord[]
+  permissionSetGroups      PermissionSetGroup[]
+  objectSharingSettings    ObjectSharingSetting[]
+  sharingRules             SharingRule[]
+  recordShares             RecordShare[]
+  recordTeamMembers        RecordTeamMember[]
+  leadOwnerHistories       LeadOwnerHistory[]
+  sequences                Sequence[]
+  rrQueues                 RRQueue[]                 @relation("RRQueueTenant")
+  rrQueueMembers           RRQueueMember[]           @relation("RRQueueMemberTenant")
+  rrQueueHistory           RRQueueHistory[]          @relation("RRQueueHistoryTenant")
+  cpPortalAccounts         CPPortalAccount[]
+  greAuditEvents           GREAuditEvent[]
+  greLinks                 GRELink[]
+  greSessions              GRESession[]
+  greForms                 GreForm[]
+  greRegistrationSessions  GreSession[]
+  roundRobinConfigs        RoundRobinConfig[]
+  roundRobinMembers        RoundRobinMember[]
 
   @@index([slug])
   @@index([companyCode])
@@ -161,11 +167,15 @@ model User {
   prevLeadOwnerHistory     LeadOwnerHistory[]         @relation("PrevLeadOwner")
   newLeadOwnerHistory      LeadOwnerHistory[]         @relation("NewLeadOwner")
   leadHistoryChanges       LeadOwnerHistory[]
-  ownedRRQueues             RRQueue[]             @relation("RRQueueOwner")
-  createdRRQueues           RRQueue[]             @relation("RRQueueCreatedBy")
-  updatedRRQueues           RRQueue[]             @relation("RRQueueUpdatedBy")
-  rrQueueMembers            RRQueueMember[]       @relation("RRQueueMemberUser")
-  rrQueueHistoryEntries     RRQueueHistory[]      @relation("RRQueueHistoryUser")
+  ownedRRQueues            RRQueue[]                  @relation("RRQueueOwner")
+  createdRRQueues          RRQueue[]                  @relation("RRQueueCreatedBy")
+  updatedRRQueues          RRQueue[]                  @relation("RRQueueUpdatedBy")
+  rrQueueMembers           RRQueueMember[]            @relation("RRQueueMemberUser")
+  rrQueueHistoryEntries    RRQueueHistory[]           @relation("RRQueueHistoryUser")
+  cpPortalNotes            CPPortalNote[]
+  greLinks                 GRELink[]
+  createdGreForms          GreForm[]                  @relation("GreFormCreator")
+  roundRobinMembers        RoundRobinMember[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -217,6 +227,7 @@ model Profile {
   description      String?
   isDefault        Boolean  @default(false)
   isAdmin          Boolean  @default(false)
+  isGlobal         Boolean  @default(false)
   leadStatusAccess Json?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -600,6 +611,7 @@ enum LeadSource {
   ADVERTISEMENT
   WALK_IN
   PORTAL
+  CHANNEL_PARTNER
   INSTAGRAM
   TWITTER
   WHATSAPP
@@ -640,14 +652,14 @@ enum Rating {
 }
 
 model Lead {
-  id         String   @id @default(cuid())
-  tenantId   String
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  ownerId    String?
-  owner      User?    @relation("LeadOwner", fields: [ownerId], references: [id])
-  creatorId  String
-  creator    User     @relation("LeadCreator", fields: [creatorId], references: [id])
-  leadNumber String?
+  id                String           @id @default(cuid())
+  tenantId          String
+  tenant            Tenant           @relation(fields: [tenantId], references: [id])
+  ownerId           String?
+  owner             User?            @relation("LeadOwner", fields: [ownerId], references: [id])
+  creatorId         String
+  creator           User             @relation("LeadCreator", fields: [creatorId], references: [id])
+  leadNumber        String?
   firstSubSource String?
   lastSource String?
   lastSubSource String?
@@ -655,12 +667,14 @@ model Lead {
   leadType String?
   lastReEngagedAt DateTime?
   lostAt DateTime?
-  rrQueueId  String?
-  rrQueue    RRQueue? @relation(fields: [rrQueueId], references: [id])
-  queueId    String?
-  queue      Queue?   @relation(fields: [queueId], references: [id])
-  projectId  String?
-  project    Project? @relation(fields: [projectId], references: [id])
+  rrQueueId         String?
+  rrQueue           RRQueue?         @relation(fields: [rrQueueId], references: [id])
+  queueId           String?
+  queue             Queue?           @relation(fields: [queueId], references: [id])
+  projectId         String?
+  project           Project?         @relation(fields: [projectId], references: [id])
+  cpPortalAccountId String?
+  cpPortalAccount   CPPortalAccount? @relation(fields: [cpPortalAccountId], references: [id])
 
   // Standard Lead Fields - Contact Information
   salutation Salutation?
@@ -670,7 +684,6 @@ model Lead {
   email      String?
   phone      String?
   mobile     String?
-  secondaryPhone String?
   tertiaryPhone String?
   alternateEmail String?
   website    String?
@@ -684,14 +697,14 @@ model Lead {
   numberOfEmployees Int?
 
   // Standard Lead Fields - Lead Management
-  source       LeadSource @default(OTHER)
-  status       LeadStatus @default(NEW)
-  rating       Rating?
-  description  String?
-  score        Int        @default(0)
-  budget       Float?
-  requirements String?
-  notes        String?
+  source                LeadSource @default(OTHER)
+  status                LeadStatus @default(NEW)
+  rating                Rating?
+  description           String?
+  score                 Int        @default(0)
+  budget                Float?
+  requirements          String?
+  notes                 String?
   customFields Json   @default("{}")
   leadSubSource String?
   campaign      String?
@@ -708,6 +721,18 @@ model Lead {
   gstNumber         String?
   companyComments   String?
 
+  secondaryEmail        String?
+  secondaryPhone        String?
+  secondarySource       String?
+  tertiarySource        String?
+  sqftRange             String?
+  bhkSize               String?
+  propertyType          String?
+  validity              String?
+  isRegistered          Boolean    @default(false)
+  cancelledAfterBooking Boolean    @default(false)
+  invoiceRaised         Boolean    @default(false)
+
   // Standard Lead Fields - Address
   street        String?
   city          String?
@@ -723,17 +748,19 @@ model Lead {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  siteVisits    SiteVisit[]
-  enquiries     Enquiry[]
-  opportunities Opportunity[]
-  quotations    Quotation[]
-  bookings      Booking[]
-  tasks         Task[]
-  followUps     FollowUp[]
-  activities    Activity[]
-  greSessions   GreSession[]
-  auditLogs     AuditLog[]
-  ownerHistory  LeadOwnerHistory[]
+  siteVisits          SiteVisit[]
+  enquiries           Enquiry[]
+  opportunities       Opportunity[]
+  quotations          Quotation[]
+  bookings            Booking[]
+  tasks               Task[]
+  followUps           FollowUp[]
+  activities          Activity[]
+  cpPortalNotes       CPPortalNote[]
+  greSessions         GRESession[]
+  greRegistrationSessions GreSession[]
+  auditLogs           AuditLog[]
+  ownerHistory        LeadOwnerHistory[]
   rrAssignmentHistory RRQueueHistory[]
 
   @@unique([tenantId, phone])
@@ -749,6 +776,7 @@ model Lead {
   @@index([tenantId, tertiaryPhone])
   @@index([tenantId, source])
   @@index([tenantId, createdAt])
+  @@index([tenantId, cpPortalAccountId])
 }
 
 model Company {
@@ -777,7 +805,7 @@ model Company {
   updatedAt       DateTime @updatedAt
 
   leads      Lead[]
-  greSessions GreSession[]
+  greRegistrationSessions GreSession[]
 
   @@unique([tenantId, normalizedName])
   @@unique([tenantId, normalizedGst])
@@ -826,6 +854,195 @@ model Enquiry {
   @@index([tenantId, projectId])
 }
 
+model CPPortalAccount {
+  id           String   @id @default(cuid())
+  tenantId     String
+  name         String   @default("Channel Partner")
+  username     String
+  email        String
+  passwordHash String
+  category     String   @default("CP Portal")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id])
+  leads  Lead[]
+  notes  CPPortalNote[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, username])
+  @@index([tenantId, isActive])
+}
+
+model CPPortalNote {
+  id                String   @id @default(cuid())
+  tenantId          String
+  leadId            String
+  userId            String?
+  cpPortalAccountId String?
+  category          String
+  text              String
+  createdAt         DateTime @default(now())
+
+  lead            Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  cpPortalAccount CPPortalAccount? @relation(fields: [cpPortalAccountId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, leadId, createdAt])
+  @@index([userId])
+  @@index([cpPortalAccountId])
+}
+
+model GREAuditEvent {
+  id         String     @id
+  tenantId   String
+  sessionId  String
+  action     String
+  details    Json?
+  createdAt  DateTime   @default(now())
+  GRESession GRESession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  Tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([tenantId, createdAt])
+}
+
+model GRELink {
+  id          String       @id
+  tenantId    String
+  tokenHash   String       @unique
+  createdById String
+  expiresAt   DateTime?
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  User        User         @relation(fields: [createdById], references: [id])
+  Tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  GRESession  GRESession[]
+
+  @@index([tenantId, createdAt])
+}
+
+model GRESession {
+  id               String          @id
+  tenantId         String
+  linkId           String
+  sessionTokenHash String          @unique
+  phone            String?
+  countryCode      String          @default("+91")
+  normalizedPhone  String?
+  hadExistingLead  Boolean         @default(false)
+  leadId           String?
+  siteVisitId      String?
+  referenceNumber  String?         @unique
+  currentStep      Int             @default(1)
+  status           String          @default("STARTED")
+  payload          Json?
+  expiresAt        DateTime
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime
+  completedAt      DateTime?
+  GREAuditEvent    GREAuditEvent[]
+  Lead             Lead?           @relation(fields: [leadId], references: [id])
+  GRELink          GRELink         @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  SiteVisit        SiteVisit?      @relation(fields: [siteVisitId], references: [id])
+  Tenant           Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([tenantId, status, createdAt])
+}
+
+enum GreSessionStatus {
+  STARTED
+  IN_PROGRESS
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+model GreForm {
+  id              String      @id @default(cuid())
+  tenantId        String
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name            String
+  publicToken     String      @unique
+  isActive        Boolean     @default(true)
+  expiresAt       DateTime?
+  defaultProjectId String?
+  createdById     String
+  createdBy       User        @relation("GreFormCreator", fields: [createdById], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  sessions        GreSession[]
+
+  @@index([tenantId, isActive])
+  @@index([tenantId, createdAt])
+}
+
+model GreSession {
+  id               String           @id @default(cuid())
+  tenantId         String
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  formId           String
+  form             GreForm           @relation(fields: [formId], references: [id], onDelete: Cascade)
+  sessionTokenHash String           @unique
+  phoneCountryCode String?
+  phone            String?
+  normalizedPhone  String?
+  leadId           String?
+  lead             Lead?             @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  siteVisitId      String?
+  siteVisit        SiteVisit?         @relation(fields: [siteVisitId], references: [id], onDelete: SetNull)
+  companyId        String?
+  company          Company?           @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  currentStep      Int               @default(1)
+  status           GreSessionStatus  @default(STARTED)
+  draft            Json?
+  referenceNumber  String?           @unique
+  leadWasExisting  Boolean?
+  expiresAt        DateTime
+  completedAt      DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([tenantId, normalizedPhone])
+  @@index([formId, status, createdAt])
+  @@index([leadId])
+}
+
+model RoundRobinConfig {
+  id          String   @id @default(cuid())
+  tenantId    String
+  poolType    String
+  name        String
+  description String?
+  profileName String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  Tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, poolType])
+  @@index([tenantId])
+}
+
+model RoundRobinMember {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  poolType  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  Tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([tenantId, userId, poolType])
+  @@index([tenantId])
+  @@index([tenantId, poolType])
+  @@index([userId])
+}
+
 // ============================================
 // SITE VISITS
 // ============================================
@@ -861,6 +1078,15 @@ model SiteVisit {
   completedAt        DateTime?
   completedById      String?
   completedBy        User?           @relation("SvCompletedBy", fields: [completedById], references: [id])
+  salespersonLatitude Float?
+  salespersonLongitude Float?
+  gpsAccuracyMeters   Float?
+  gpsTimestamp        DateTime?
+  projectLatitudeAtCompletion Float?
+  projectLongitudeAtCompletion Float?
+  distanceFromProjectMeters Float?
+  locationVerified    Boolean         @default(false)
+  locationVerifiedAt  DateTime?
   status             SiteVisitStatus @default(SCHEDULED)
   feedback           String?
   customerFeedback   String?
@@ -874,13 +1100,17 @@ model SiteVisit {
   visitorCount       Int?
   visitType          String?
   transportRequired  Boolean?
+  salesHandoffAt     DateTime?
+  salesHandoffQueueId String?
+  salesHandoffPendingReason String?
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 
   activities    Activity[]
-  greSessions   GreSession[]
   tasks         Task[]
   opportunities Opportunity[]
+  greSessions   GRESession[]
+  greRegistrationSessions GreSession[]
 
   @@unique([tenantId, siteVisitNumber])
   @@index([tenantId])
@@ -888,6 +1118,7 @@ model SiteVisit {
   @@index([tenantId, assigneeId])
   @@index([leadId])
   @@index([previousSiteVisitId])
+  @@index([tenantId, salesHandoffAt])
 }
 
 // ============================================
@@ -1125,21 +1356,29 @@ enum UnitStatus {
 }
 
 model Project {
-  id          String   @id @default(cuid())
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  name        String
-  description String?
-  address     String?
-  city        String?
-  state       String?
-  zipCode     String?
-  latitude    Float?
-  longitude   Float?
-  totalUnits  Int?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String    @id @default(cuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  name             String
+  description      String?
+  address          String?
+  city             String?
+  state            String?
+  zipCode          String?
+  latitude         Decimal?  @db.Decimal(10, 7)
+  longitude        Decimal?  @db.Decimal(10, 7)
+  mapUrl           String?   @map("map_url")
+  allowedRadiusMeters Int    @default(100)
+  totalUnits       Int?
+  projectType      String?
+  priceRange       String?
+  possessionDate   DateTime?
+  cpCommission     String?
+  commissionAmount Float?
+  brochureUrl      String?
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   units         Unit[]
   leads         Lead[]
@@ -1148,6 +1387,7 @@ model Project {
   opportunities Opportunity[]
   quotations    Quotation[]
   bookings      Booking[]
+  rrQueues      RRQueue[]  @relation("RRQueueProject")
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -1318,64 +1558,6 @@ model Activity {
   @@index([siteVisitId])
   @@index([opportunityId])
   @@index([bookingId])
-}
-
-enum GreSessionStatus {
-  STARTED
-  IN_PROGRESS
-  COMPLETED
-  EXPIRED
-  CANCELLED
-}
-
-model GreForm {
-  id              String   @id @default(cuid())
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name            String
-  publicToken     String   @unique
-  isActive        Boolean  @default(true)
-  expiresAt       DateTime?
-  defaultProjectId String?
-  createdById     String
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  sessions GreSession[]
-
-  @@index([tenantId, isActive])
-  @@index([tenantId, createdAt])
-}
-
-model GreSession {
-  id                    String           @id @default(cuid())
-  tenantId              String
-  tenant                Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  formId                String
-  form                  GreForm          @relation(fields: [formId], references: [id], onDelete: Cascade)
-  sessionTokenHash      String           @unique
-  phoneCountryCode      String?
-  phone                 String?
-  normalizedPhone       String?
-  leadId                String?
-  lead                  Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  siteVisitId           String?
-  siteVisit             SiteVisit?       @relation(fields: [siteVisitId], references: [id], onDelete: SetNull)
-  companyId             String?
-  company               Company?         @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  currentStep           Int              @default(1)
-  status                GreSessionStatus @default(STARTED)
-  draft                 Json?
-  referenceNumber       String?          @unique
-  leadWasExisting       Boolean?
-  expiresAt             DateTime
-  completedAt           DateTime?
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
-
-  @@index([tenantId, normalizedPhone])
-  @@index([formId, status, createdAt])
-  @@index([leadId])
 }
 
 model Notification {
@@ -1565,32 +1747,32 @@ model ReportFolderFavorite {
 }
 
 model Dashboard {
-  id          String   @id @default(cuid())
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  folderId    String?
-  folder      DashboardFolder? @relation(fields: [folderId], references: [id])
-  ownerId     String?
-  owner       User? @relation("DashboardOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  name        String
-  description String?
-  filters     Json?
-  layout      Json
-  layoutConfig Json?
-  visibility  DashboardVisibility @default(PRIVATE)
-  refreshInterval String @default("MANUAL")
-  autoRefreshWhileEditing Boolean @default(false)
-  isDefault   Boolean  @default(false)
-  isActive    Boolean  @default(true)
-  createdBy   String
-  lastRefreshedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                      String              @id @default(cuid())
+  tenantId                String
+  tenant                  Tenant              @relation(fields: [tenantId], references: [id])
+  folderId                String?
+  folder                  DashboardFolder?    @relation(fields: [folderId], references: [id])
+  ownerId                 String?
+  owner                   User?               @relation("DashboardOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  name                    String
+  description             String?
+  filters                 Json?
+  layout                  Json
+  layoutConfig            Json?
+  visibility              DashboardVisibility @default(PRIVATE)
+  refreshInterval         String              @default("MANUAL")
+  autoRefreshWhileEditing Boolean             @default(false)
+  isDefault               Boolean             @default(false)
+  isActive                Boolean             @default(true)
+  createdBy               String
+  lastRefreshedAt         DateTime?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
 
   sharedProfiles DashboardProfileShare[]
-  shares        DashboardShare[]
-  favorites     DashboardFavorite[]
-  subscriptions DashboardSubscription[]
+  shares         DashboardShare[]
+  favorites      DashboardFavorite[]
+  subscriptions  DashboardSubscription[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -1631,9 +1813,9 @@ model DashboardFolderFavorite {
   tenantId  String
   tenant    Tenant          @relation(fields: [tenantId], references: [id])
   folderId  String
-  folder    DashboardFolder  @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  folder    DashboardFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
   userId    String
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime        @default(now())
 
   @@unique([folderId, userId])
@@ -1641,19 +1823,19 @@ model DashboardFolderFavorite {
 }
 
 model DashboardShare {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
   dashboardId String
   dashboard   Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
   userId      String?
-  user        User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
   roleId      String?
-  role        Role? @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  role        Role?     @relation(fields: [roleId], references: [id], onDelete: Cascade)
   teamId      String?
-  accessLevel String   @default("VIEW")
+  accessLevel String    @default("VIEW")
   createdBy   String
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@index([tenantId, dashboardId])
   @@index([userId])
@@ -1661,28 +1843,28 @@ model DashboardShare {
 }
 
 model DashboardFavorite {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
   dashboardId String
   dashboard   Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
   userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
 
   @@unique([dashboardId, userId])
   @@index([tenantId, userId])
 }
 
 model DashboardSubscription {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
   dashboardId String
   dashboard   Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
   userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
 
   @@unique([dashboardId, userId])
   @@index([tenantId, userId])
@@ -1989,43 +2171,46 @@ model Sequence {
 }
 
 model RRQueue {
-  id                 String    @id @default(cuid())
-  tenantId           String
-  tenant             Tenant    @relation("RRQueueTenant", fields: [tenantId], references: [id], onDelete: Cascade)
-  name               String
-  leadStatus         Json?
-  leadSource         Json?
-  secondarySource    Json?
-  tertiarySource     Json?
-  leadPriority       Json?
-  category           Json?
-  projectInterested  Json?
-  country            Json?
-  presalesQueue      Boolean   @default(false)
+  id                  String    @id @default(cuid())
+  tenantId            String
+  tenant              Tenant    @relation("RRQueueTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  name                String
+  leadStatus          Json?
+  leadSource          Json?
+  secondarySource     Json?
+  tertiarySource      Json?
+  leadPriority        Json?
+  category            Json?
+  projectInterested   Json?
+  projectId           String?
+  project             Project?  @relation("RRQueueProject", fields: [projectId], references: [id], onDelete: SetNull)
+  country             Json?
+  presalesQueue       Boolean   @default(false)
   excludeFromNoSource Json?
-  active             Boolean   @default(true)
-  startTime          DateTime?
-  endTime            DateTime?
-  ownerId            String?
-  defaultOwnerId     String?
-  owner              User?     @relation("RRQueueOwner", fields: [ownerId], references: [id])
-  leadCount          Int       @default(0)
-  previousId         Int       @default(0)
-  noOfUsers          Int       @default(0)
-  createdById        String
-  createdBy          User      @relation("RRQueueCreatedBy", fields: [createdById], references: [id])
-  createdAt          DateTime  @default(now())
-  updatedById        String?
-  updatedBy          User?     @relation("RRQueueUpdatedBy", fields: [updatedById], references: [id])
-  updatedAt          DateTime  @updatedAt
+  active              Boolean   @default(true)
+  startTime           DateTime?
+  endTime             DateTime?
+  ownerId             String?
+  defaultOwnerId      String?
+  owner               User?     @relation("RRQueueOwner", fields: [ownerId], references: [id])
+  leadCount           Int       @default(0)
+  previousId          Int       @default(0)
+  noOfUsers           Int       @default(0)
+  createdById         String
+  createdBy           User      @relation("RRQueueCreatedBy", fields: [createdById], references: [id])
+  createdAt           DateTime  @default(now())
+  updatedById         String?
+  updatedBy           User?     @relation("RRQueueUpdatedBy", fields: [updatedById], references: [id])
+  updatedAt           DateTime  @updatedAt
 
-  members            RRQueueMember[]
-  history            RRQueueHistory[]
-  leads              Lead[]
+  members RRQueueMember[]
+  history RRQueueHistory[]
+  leads   Lead[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
   @@index([tenantId, ownerId])
+  @@index([tenantId, projectId, active])
 }
 
 model RRQueueMember {
@@ -2042,30 +2227,36 @@ model RRQueueMember {
   activeMember     Boolean  @default(true)
   maxLeadCapacity  Int      @default(-1)
   currentLeadCount Int      @default(0)
+  userType         String
+  isAvailable      Boolean  @default(true)
+  isWorking        Boolean  @default(true)
+  weekOff          Boolean  @default(false)
+  lastAssignedAt   DateTime?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@unique([tenantId, name], map: "RRQueueMember_tenant_name_key")
-  @@unique([rrQueueId, userId])
+  @@unique([rrQueueId, userId, userType])
   @@unique([rrQueueId, sequenceId])
   @@index([tenantId, rrQueueId, activeMember])
+  @@index([rrQueueId, userType, activeMember, isAvailable, isWorking, weekOff])
 }
 
 model RRQueueHistory {
-  id           String   @id @default(cuid())
-  tenantId     String
-  tenant       Tenant   @relation("RRQueueHistoryTenant", fields: [tenantId], references: [id], onDelete: Cascade)
-  rrQueueId    String
-  rrQueue      RRQueue  @relation(fields: [rrQueueId], references: [id], onDelete: Cascade)
-  leadId       String?
-  lead         Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  field        String
-  userId       String
-  user         User     @relation("RRQueueHistoryUser", fields: [userId], references: [id])
-  userName     String
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation("RRQueueHistoryTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  rrQueueId     String
+  rrQueue       RRQueue  @relation(fields: [rrQueueId], references: [id], onDelete: Cascade)
+  leadId        String?
+  lead          Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  field         String
+  userId        String
+  user          User     @relation("RRQueueHistoryUser", fields: [userId], references: [id])
+  userName      String
   originalValue String?
-  newValue     String?
-  createdAt    DateTime @default(now())
+  newValue      String?
+  createdAt     DateTime @default(now())
 
   @@index([tenantId, rrQueueId, createdAt])
   @@index([leadId])

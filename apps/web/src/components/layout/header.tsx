@@ -2,7 +2,7 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 
 import * as React from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -13,40 +13,28 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Search, Bell, Menu, Settings, LogOut, User, HelpCircle, ChevronDown, Check } from "lucide-react";
+import { Search, Bell, Menu, Settings, LogOut, User, HelpCircle, ChevronDown } from "lucide-react";
 import { SearchDialog } from "@/components/crm/search-dialog";
 import { useAuth } from "@/contexts/auth-context";
-import { homepageApi, profileApi } from "@/lib/api";
+import { homepageApi } from "@/lib/api";
 
 interface HeaderProps {
   onMenuClick: () => void;
 }
 
-function slugifyProfileName(name: string) {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 export function Header({ onMenuClick }: HeaderProps) {
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const { user, profile, logout, isAdmin, isSuperAdmin } = useAuth();
+  const searchParams = useSearchParams();
   const isAuthenticated = Boolean(user);
-  const showHomeSelector = isAuthenticated;
+  const showHomeSelector = isAuthenticated && isAdmin && !isSuperAdmin;
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [adminHomeOpen, setAdminHomeOpen] = React.useState(false);
-  const [adminProfiles, setAdminProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [adminHomepages, setAdminHomepages] = React.useState<{ id: string; name: string }[]>([]);
+  const homepageRefreshId = React.useRef(0);
   const [notifications] = React.useState([
     { id: 1, title: "New lead assigned", time: "5 min ago", read: false },
     { id: 2, title: "Site visit scheduled", time: "1 hour ago", read: false },
@@ -54,60 +42,38 @@ export function Header({ onMenuClick }: HeaderProps) {
   ]);
 
   const refreshAdminDropdownData = React.useCallback(() => {
-    if (!user) {
-      setAdminProfiles([]);
+    if (!user || !isAdmin || isSuperAdmin) {
+      homepageRefreshId.current += 1;
       setAdminHomepages([]);
       return;
     }
 
-    let isMounted = true;
-    const profilesRequest = isAdmin ? profileApi.list() : Promise.resolve({ data: [] });
-    const homepagesRequest = isAdmin ? homepageApi.list() : homepageApi.assigned();
-    Promise.all([profilesRequest, homepagesRequest])
-      .then(([profilesResponse, homepagesResponse]) => {
-        const profileItems = (Array.isArray(profilesResponse.data)
-          ? profilesResponse.data
-          : (profilesResponse.data as any)?.data ?? (profilesResponse.data as any)?.profiles ?? []) as Array<{ id?: string; name?: string }>;
-        const homepageResponseData = (homepagesResponse.data as any)?.data;
+    const refreshId = ++homepageRefreshId.current;
+    homepageApi.list()
+      .then((homepagesResponse) => {
         const homepageItems = (Array.isArray(homepagesResponse.data)
           ? homepagesResponse.data
-          : Array.isArray(homepageResponseData)
-            ? homepageResponseData
-            : homepageResponseData
-              ? [homepageResponseData]
-              : (homepagesResponse.data as any)?.homepages ?? []) as Array<{ id?: string; name?: string }>;
+          : (homepagesResponse.data as any)?.data ?? (homepagesResponse.data as any)?.homepages ?? []) as Array<{ id?: string; name?: string; isActive?: boolean }>;
 
-        const uniqueProfiles: Array<{ id: string; name: string }> = Array.from(
-          new Map(
-            profileItems
-              .filter((item) => !!item?.name)
-              .map((item) => [item.id as string, { id: item.id || "", name: item.name as string }])
-          ).values()
-        ).sort((a, b) => a.name.localeCompare(b.name));
         const uniqueHomepages: Array<{ id: string; name: string }> = Array.from(
           new Map(
             homepageItems
-              .filter((item) => !!item?.name)
-              .map((item) => [item.id as string, { id: item.id || "", name: item.name as string }])
+              .filter((item) => !!item?.id && !!item?.name && item.isActive !== false)
+              .map((item) => [item.id as string, { id: item.id as string, name: item.name as string }])
           ).values()
         ).sort((a, b) => a.name.localeCompare(b.name));
 
-        if (isMounted) {
-          setAdminProfiles(uniqueProfiles);
+        if (refreshId === homepageRefreshId.current) {
           setAdminHomepages(uniqueHomepages);
         }
       })
-      .catch(() => {
-        if (isMounted) {
-          setAdminProfiles([]);
+      .catch((error) => {
+        console.error("Failed to load admin homepages:", error);
+        if (refreshId === homepageRefreshId.current) {
           setAdminHomepages([]);
         }
       });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isAdmin, isAuthenticated]);
+  }, [isAdmin, isAuthenticated, isSuperAdmin]);
 
   React.useEffect(() => {
     refreshAdminDropdownData();
@@ -123,32 +89,21 @@ export function Header({ onMenuClick }: HeaderProps) {
     ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || "User"
     : "User";
 
-  const selectedHomepageId = pathname === "/home"
-    ? searchParams.get("homepage")
-    : null;
-  const selectedHomepage = adminHomepages.find(
-    (homepage) => homepage.id === selectedHomepageId,
-  );
-  const isAdminHomeSelected = pathname === "/home" && !selectedHomepageId;
-  const selectedHomeLabel = selectedHomepage?.name || "Admin Home";
-
   const handleLogout = async () => {
     await logout();
   };
 
-  const handleProfileNavigation = (profileName: string) => {
+  const selectedHomepageId = searchParams.get("homepage");
+  const selectedHomepage = adminHomepages.find((homepage) => homepage.id === selectedHomepageId);
+
+  const handleHomepageNavigation = (homepage: { id: string }) => {
     setAdminHomeOpen(false);
-    router.push(`/profiles/${slugifyProfileName(profileName)}`);
+    router.push(`/dashboard?homepage=${encodeURIComponent(homepage.id)}`);
   };
 
-  const handleHomepageNavigation = (homepageId: string) => {
+  const handleDefaultHomepageNavigation = () => {
     setAdminHomeOpen(false);
-    router.push(`/home?homepage=${encodeURIComponent(homepageId)}`);
-  };
-
-  const handleAdminHomeNavigation = () => {
-    setAdminHomeOpen(false);
-    router.push("/home");
+    router.push("/dashboard");
   };
 
   return (
@@ -189,62 +144,23 @@ export function Header({ onMenuClick }: HeaderProps) {
                   variant="ghost"
                   className="h-9 border border-border bg-background px-3 text-sm font-medium text-foreground shadow-sm"
                 >
-                  <span className="max-w-48 truncate">{selectedHomeLabel}</span>
+                  <span className="max-w-48 truncate">{selectedHomepage?.name || "Admin Home"}</span>
                   <ChevronDown className="ml-2 h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuItem
-                  onSelect={handleAdminHomeNavigation}
-                  className={cn(
-                    "font-medium",
-                    isAdminHomeSelected && "bg-accent",
-                  )}
-                >
-                  <Check className={cn("mr-2 h-4 w-4", !isAdminHomeSelected && "invisible")} />
+                <DropdownMenuItem onSelect={handleDefaultHomepageNavigation} className="text-sm">
                   Admin Home
                 </DropdownMenuItem>
-                {adminProfiles.map((profileItem) => (
-                  <DropdownMenuItem
-                    key={`profile-${profileItem.id}`}
-                    onSelect={() => handleProfileNavigation(profileItem.name)}
-                    className="text-sm"
-                  >
-                    {profileItem.name}
-                  </DropdownMenuItem>
-                ))}
-                {adminProfiles.length > 0 && adminHomepages.length > 0 && <DropdownMenuSeparator />}
                 {adminHomepages.map((homepage) => (
                   <DropdownMenuItem
-                    key={homepage.id}
-                    onSelect={() => handleHomepageNavigation(homepage.id)}
-                    className={cn(
-                      "text-sm",
-                      selectedHomepageId === homepage.id && "bg-accent font-medium",
-                    )}
+                    key={`homepage-${homepage.id}`}
+                    onSelect={() => handleHomepageNavigation(homepage)}
+                    className="text-sm"
                   >
-                    <Check className={cn("mr-2 h-4 w-4", selectedHomepageId !== homepage.id && "invisible")} />
                     {homepage.name}
                   </DropdownMenuItem>
                 ))}
-                {isAdmin && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>Customize Home page</DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            setAdminHomeOpen(false);
-                            router.push("/admin/customize-home");
-                          }}
-                        >
-                          Standard
-                        </DropdownMenuItem>
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                  </>
-                )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}

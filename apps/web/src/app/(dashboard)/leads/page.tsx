@@ -1,4 +1,3 @@
-
 "use client";
 
 import * as React from "react";
@@ -13,7 +12,7 @@ import { Button } from "@/components/ui/button";
 
 import { LeadList, Lead } from "@/components/crm/lead-list";
 
-import { Plus, AlertCircle } from "lucide-react";
+import { Plus, AlertCircle, RotateCcw } from "lucide-react";
 
 const STATUS_LABELS: Record<string, string> = {
   NEW: "New",
@@ -148,6 +147,16 @@ export default function LeadsPage() {
     setCurrentPage(page);
   };
 
+  const clearFilters = () => {
+    setSearch("");
+    setDebouncedSearch("");
+    setStatusFilter("");
+    setSourceFilter("");
+    setDateFrom("");
+    setDateTo("");
+    setCurrentPage(1);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -244,6 +253,15 @@ export default function LeadsPage() {
           />
         </div>
       </div>
+
+      {(search || statusFilter || sourceFilter || dateFrom || dateTo) && (
+        <div className="flex justify-end">
+          <Button variant="outline" size="sm" onClick={clearFilters}>
+            <RotateCcw className="mr-2 h-4 w-4" />
+            Clear filters
+          </Button>
+        </div>
+      )}
 
       <LeadList
         leads={leads}

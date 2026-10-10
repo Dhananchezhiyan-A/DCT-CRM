@@ -37,7 +37,7 @@ router.get('/', authorize('Dashboard', 'read'), async (req: AuthRequest, res: Re
   }
 });
 
-router.get('/assigned', authorize('Dashboard', 'read'), async (req: AuthRequest, res: Response) => {
+router.get('/assigned', async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { profileId: true } });
     const homepage = user?.profileId
@@ -135,7 +135,7 @@ router.put('/:id', authorize('Dashboard', 'edit'), async (req: AuthRequest, res:
         where: { id: existing.id },
         data: {
           name: data.name,
-          description: data.description || undefined,
+          description: data.description ?? undefined,
           layout: data.layout,
           sharedProfiles: { create: data.profileIds.map((profileId) => ({ profileId })) },
         },

@@ -1,5 +1,4 @@
 import { Router, Response } from 'express';
-import { Prisma } from '@prisma/client';
 import { prisma } from '@dct-crm/db';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
@@ -27,116 +26,100 @@ const opportunitySchema = z.object({
 
 const updateOpportunitySchema = opportunitySchema.partial();
 
-const opportunityInclude = {
-  lead: {
-    select: {
-      id: true,
-      leadNumber: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-      phone: true,
-      mobile: true,
-      company: true,
-      budget: true,
-      preferredLocation: true,
-      project: { select: { id: true, name: true } },
-      greSessions: {
-        where: { status: 'COMPLETED' },
-        orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
-        take: 1,
-        select: {
-          referenceNumber: true,
-          completedAt: true,
-          phone: true,
-          draft: true,
-          siteVisit: {
-            select: {
-              scheduledAt: true,
-              project: { select: { name: true } },
-            },
-          },
-        },
-      },
-    },
+const greRegistrationRelations = {
+  greSessions: {
+    where: { status: 'COMPLETED' as const },
+    take: 1,
+    orderBy: [{ completedAt: 'desc' as const }, { createdAt: 'desc' as const }, { id: 'desc' as const }],
+    include: { SiteVisit: { include: { project: { select: { name: true } } } } },
   },
-  owner: { select: { id: true, firstName: true, lastName: true } },
-  creator: { select: { id: true, firstName: true, lastName: true } },
-  project: { select: { id: true, name: true } },
-} satisfies Prisma.OpportunityInclude;
+  greRegistrationSessions: {
+    where: { status: 'COMPLETED' as const },
+    take: 1,
+    orderBy: [{ completedAt: 'desc' as const }, { createdAt: 'desc' as const }, { id: 'desc' as const }],
+    include: { siteVisit: { include: { project: { select: { name: true } } } } },
+  },
+};
 
-const opportunityDetailInclude = {
-  ...opportunityInclude,
-  owner: { select: { id: true, firstName: true, lastName: true, email: true } },
-  quotations: { select: { id: true, number: true, totalAmount: true, status: true } },
-  bookings: { select: { id: true, number: true, status: true, totalAmount: true } },
-  activities: { take: 10, orderBy: { createdAt: 'desc' } },
-  tasks: { take: 10, orderBy: { createdAt: 'desc' } },
-} satisfies Prisma.OpportunityInclude;
-
-type OpportunityWithGre = Prisma.OpportunityGetPayload<{ include: typeof opportunityInclude }>;
-
-function jsonProperty(value: Prisma.JsonValue | null, key: string): Prisma.JsonValue | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value[key] ?? null;
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
-function jsonText(value: Prisma.JsonValue | null): string | null {
-  return typeof value === 'string' && value.trim() ? value : null;
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function jsonNumber(value: Prisma.JsonValue | null): number | null {
+function nullableNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function mapOpportunity<T extends OpportunityWithGre>(opportunity: T) {
-  const lead = opportunity.lead;
-  const session = lead?.greSessions[0];
-  const greLead = session ? jsonProperty(session.draft, 'lead') : null;
-  const greSiteVisit = session ? jsonProperty(session.draft, 'siteVisit') : null;
-  const greCompany = session ? jsonProperty(session.draft, 'company') : null;
+function asDate(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'string' && value.length > 0) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return null;
+}
+
+function greRegistrationSnapshot(opportunity: { lead?: unknown }) {
+  const leadRecord = asRecord(opportunity.lead);
+  const sessions = [
+    ...(Array.isArray(leadRecord.greRegistrationSessions) ? leadRecord.greRegistrationSessions : []),
+    ...(Array.isArray(leadRecord.greSessions) ? leadRecord.greSessions : []),
+  ].map(asRecord).sort((left, right) => {
+    const leftDate = asDate(left.completedAt) ?? asDate(left.createdAt);
+    const rightDate = asDate(right.completedAt) ?? asDate(right.createdAt);
+    return (rightDate?.getTime() ?? 0) - (leftDate?.getTime() ?? 0);
+  });
+  const session = sessions[0];
+  if (!session) return null;
+
+  const snapshot = asRecord(session.draft ?? session.payload);
+  const lead = asRecord(snapshot.lead);
+  const visit = asRecord(snapshot.siteVisit);
+  const company = asRecord(snapshot.company);
+  const siteVisit = asRecord(session.siteVisit ?? session.SiteVisit);
+  const scheduledDate = asDate(siteVisit.scheduledAt);
+  const scheduledAt = scheduledDate?.toISOString() ?? null;
+  const project = nullableString(asRecord(siteVisit.project).name)
+    ?? nullableString(visit.project)
+    ?? nullableString(visit.projectName);
 
   return {
+    referenceNumber: nullableString(session.referenceNumber),
+    submittedAt: asDate(session.completedAt)?.toISOString() ?? null,
+    lead: {
+      firstName: nullableString(lead.firstName),
+      lastName: nullableString(lead.lastName),
+      email: nullableString(lead.email),
+      phone: nullableString(lead.phone) ?? nullableString(session.phone),
+      company: nullableString(company.name) ?? nullableString(lead.company),
+      budget: nullableNumber(lead.budget),
+      preferredLocation: nullableString(lead.preferredLocation),
+    },
+    siteVisit: {
+      date: nullableString(visit.date) ?? (scheduledAt ? scheduledAt.slice(0, 10) : null),
+      time: nullableString(visit.time) ?? (scheduledAt ? scheduledAt.slice(11, 16) : null),
+      project,
+      scheduledAt,
+      visitType: nullableString(visit.visitType),
+      visitorCount: nullableNumber(visit.visitorCount),
+    },
+    company: {
+      name: nullableString(company.name),
+      type: nullableString(company.type),
+      industry: nullableString(company.industry),
+    },
+  };
+}
+
+function withGreRegistration<T extends { lead?: unknown }>(opportunity: T) {
+  return {
     ...opportunity,
-    lead: lead ? {
-      id: lead.id,
-      leadNumber: lead.leadNumber,
-      firstName: lead.firstName,
-      lastName: lead.lastName,
-      email: lead.email,
-      phone: lead.phone,
-      mobile: lead.mobile,
-      company: lead.company,
-      budget: lead.budget,
-      preferredLocation: lead.preferredLocation,
-      project: lead.project,
-    } : null,
-    greRegistration: session ? {
-      referenceNumber: session.referenceNumber,
-      submittedAt: session.completedAt,
-      lead: {
-        firstName: jsonText(jsonProperty(greLead, 'firstName')) ?? lead?.firstName ?? null,
-        lastName: jsonText(jsonProperty(greLead, 'lastName')) ?? lead?.lastName ?? null,
-        email: jsonText(jsonProperty(greLead, 'email')) ?? lead?.email ?? null,
-        phone: session.phone ?? lead?.phone ?? lead?.mobile ?? null,
-        company: jsonText(jsonProperty(greCompany, 'name')) ?? lead?.company ?? null,
-        budget: jsonNumber(jsonProperty(greLead, 'budget')) ?? lead?.budget ?? null,
-        preferredLocation: jsonText(jsonProperty(greLead, 'preferredLocation')) ?? lead?.preferredLocation ?? null,
-      },
-      siteVisit: {
-        date: jsonText(jsonProperty(greSiteVisit, 'date')),
-        time: jsonText(jsonProperty(greSiteVisit, 'time')),
-        project: session.siteVisit?.project?.name ?? lead?.project?.name ?? null,
-        scheduledAt: session.siteVisit?.scheduledAt ?? null,
-        visitType: jsonText(jsonProperty(greSiteVisit, 'visitType')),
-        visitorCount: jsonNumber(jsonProperty(greSiteVisit, 'visitorCount')),
-      },
-      company: {
-        name: jsonText(jsonProperty(greCompany, 'name')),
-        type: jsonText(jsonProperty(greCompany, 'type')),
-        industry: jsonText(jsonProperty(greCompany, 'industry')),
-      },
-    } : null,
+    greRegistration: greRegistrationSnapshot(opportunity),
   };
 }
 
@@ -180,7 +163,27 @@ router.get('/', authorize('Opportunity', 'read'), async (req: AuthRequest, res: 
         take: Number(limit),
         orderBy: { [sortBy as string]: sortOrder },
         include: {
-          ...opportunityInclude,
+          lead: {
+            select: {
+              id: true, firstName: true, lastName: true, phone: true, email: true,
+              ...greRegistrationRelations,
+            },
+          },
+          owner: { select: { id: true, firstName: true, lastName: true } },
+          creator: { select: { id: true, firstName: true, lastName: true } },
+          project: { select: { id: true, name: true } },
+          unit: { select: { id: true, number: true, price: true } },
+          quotations: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { totalAmount: true },
+          },
+          bookings: {
+            where: { status: { not: 'CANCELLED' } },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { status: true, totalAmount: true, unit: { select: { number: true } } },
+          },
           _count: { select: { quotations: true, bookings: true, activities: true } },
         },
       }),
@@ -189,7 +192,7 @@ router.get('/', authorize('Opportunity', 'read'), async (req: AuthRequest, res: 
 
     res.json({
       success: true,
-      data: opportunities.map(mapOpportunity),
+      data: opportunities.map(withGreRegistration),
       pagination: {
         page: Number(page),
         limit: Number(limit),
@@ -209,14 +212,32 @@ router.get('/:id', authorize('Opportunity', 'read'), async (req: AuthRequest, re
 
     const opportunity = await prisma.opportunity.findFirst({
       where: { ...(await getOpportunityVisibilityFilter(tenantId, req.user!.id, 'read')), id: req.params.id },
-      include: opportunityDetailInclude,
+      include: {
+        lead: {
+          select: {
+            id: true, leadNumber: true, firstName: true, lastName: true, email: true,
+            phone: true, mobile: true, company: true, status: true, street: true,
+            city: true, stateProvince: true, postalCode: true, country: true,
+            ...greRegistrationRelations,
+          },
+        },
+        owner: { select: { id: true, firstName: true, lastName: true, email: true } },
+        creator: { select: { id: true, firstName: true, lastName: true } },
+        project: { select: { id: true, name: true, city: true, address: true } },
+        unit: { select: { id: true, number: true, type: true, area: true, price: true } },
+        siteVisit: { select: { id: true, siteVisitNumber: true, status: true, completedAt: true } },
+        quotations: { orderBy: { createdAt: 'desc' }, select: { id: true, number: true, totalAmount: true, status: true } },
+        bookings: { select: { id: true, number: true, status: true, totalAmount: true } },
+        activities: { take: 10, orderBy: { createdAt: 'desc' }, include: { user: { select: { firstName: true, lastName: true } } } },
+        tasks: { take: 10, orderBy: { createdAt: 'desc' }, include: { owner: { select: { firstName: true, lastName: true } } } },
+      },
     });
 
     if (!opportunity) {
       return res.status(404).json({ success: false, error: 'Opportunity not found' });
     }
 
-    res.json({ success: true, data: mapOpportunity(opportunity) });
+    res.json({ success: true, data: withGreRegistration(opportunity) });
   } catch (error) {
     console.error('Get opportunity error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch opportunity' });
@@ -255,13 +276,19 @@ router.post('/', authorize('Opportunity', 'create'), async (req: AuthRequest, re
         lostReason: data.lostReason,
       },
       include: {
-        ...opportunityInclude,
+        lead: {
+          select: {
+            id: true, firstName: true, lastName: true,
+            ...greRegistrationRelations,
+          },
+        },
+        owner: { select: { id: true, firstName: true, lastName: true } },
       },
     });
 
     await auditLog(tenantId, userId, 'CREATE', 'Opportunity', opportunity.id, null, { name: data.name, stage: data.stage, amount: data.amount });
 
-    res.status(201).json({ success: true, data: mapOpportunity(opportunity) });
+    res.status(201).json({ success: true, data: withGreRegistration(opportunity) });
   } catch (error: any) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: error.errors[0].message });
@@ -307,12 +334,19 @@ router.put('/:id', authorize('Opportunity', 'edit'), async (req: AuthRequest, re
         ...data,
         expectedCloseDate: data.expectedCloseDate ? new Date(data.expectedCloseDate) : undefined,
       },
-      include: opportunityInclude,
+      include: {
+        lead: {
+          select: {
+            id: true, firstName: true, lastName: true,
+            ...greRegistrationRelations,
+          },
+        },
+      },
     });
 
     await auditLog(tenantId, userId, 'UPDATE', 'Opportunity', opportunity.id, existing, opportunity);
 
-    res.json({ success: true, data: mapOpportunity(opportunity) });
+    res.json({ success: true, data: withGreRegistration(opportunity) });
   } catch (error: any) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: error.errors[0].message });
@@ -346,12 +380,19 @@ router.patch('/:id/stage', authorize('Opportunity', 'edit'), async (req: AuthReq
     const opportunity = await prisma.opportunity.update({
       where: { id: req.params.id },
       data: updateData,
-      include: opportunityInclude,
+      include: {
+        lead: {
+          select: {
+            id: true, firstName: true, lastName: true,
+            ...greRegistrationRelations,
+          },
+        },
+      },
     });
 
     await auditLog(tenantId, userId, 'UPDATE', 'Opportunity', opportunity.id, existing, parsedStage);
 
-    res.json({ success: true, data: mapOpportunity(opportunity) });
+    res.json({ success: true, data: withGreRegistration(opportunity) });
   } catch (error) {
     console.error('Update opportunity stage error:', error);
     res.status(500).json({ success: false, error: 'Failed to update opportunity stage' });

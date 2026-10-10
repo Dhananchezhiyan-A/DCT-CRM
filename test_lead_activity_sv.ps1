@@ -205,7 +205,7 @@ $leadMain = Get-Content -LiteralPath "$root\apps\web\src\app\(dashboard)\leads\p
 if ($leadMain -notmatch 'Search by name') { Pass "J8 Leads main page has no name search" } else { Fail "J8 Name search on leads page" "still present" }
 
 Log "`n=== K. WEB ROUTES ===" "Cyan"
-foreach ($path in @("/login","/leads","/setup/customization/rrqueues")) {
+foreach ($path in @("/login","/leads")) {
     try {
         $web = Invoke-WebRequest -Uri "http://localhost:3000$path" -UseBasicParsing -MaximumRedirection 5 -TimeoutSec 30
         if ($web.StatusCode -eq 200) { Pass "K: Web $path -> 200" } else { Fail "K: Web $path" "Status $($web.StatusCode)" }

@@ -9,7 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/crm/data-table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
-import { Plus, MoreHorizontal, Eye, Edit, Trash2, Building2 } from "lucide-react";
+import { Plus, MoreHorizontal, Eye, Edit, Trash2, Building2, MapPin } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,11 +22,16 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { projectApi } from "@/lib/api";
 import { formatDate } from "@/lib/date-format";
+import { projectLocationLabel } from "@/lib/project-location";
+import { ProjectLocationFields } from "@/components/projects/project-location-fields";
+import { ProjectMap } from "@/components/projects/project-map";
 
 interface Project {
   id: string;
   name: string;
   location: string;
+  latitude: number | null;
+  longitude: number | null;
   type: "residential" | "commercial" | "mixed";
   totalUnits: number;
   soldUnits: number;
@@ -59,7 +67,9 @@ function mapProject(item: any): Project {
   return {
     id: item.id,
     name: item.name || "Project",
-    location: [item.city, item.state].filter(Boolean).join(", ") || item.address || "—",
+    location: projectLocationLabel(item),
+    latitude: item.latitude == null ? null : Number(item.latitude),
+    longitude: item.longitude == null ? null : Number(item.longitude),
     type: "residential",
     totalUnits: total,
     soldUnits: item.soldUnits ?? 0,
@@ -83,6 +93,38 @@ const columns: ColumnDef<Project>[] = [
   {
     accessorKey: "location",
     header: "Location",
+    cell: ({ row }) => (
+      <div className="min-w-48">
+        <span className="font-medium">{row.original.location}</span>
+      </div>
+    ),
+  },
+  {
+    id: "mapPoint",
+    header: "Map",
+    cell: ({ row }) => {
+      const project = row.original;
+      const hasPoint = project.latitude != null && project.longitude != null;
+      return (
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button variant="ghost" size="icon" disabled={!hasPoint} aria-label={`Show map point for ${project.name}`} title={hasPoint ? "Show exact map point" : "Coordinates not set"}>
+              <MapPin className="h-4 w-4" />
+            </Button>
+          </DialogTrigger>
+          {hasPoint && (
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>{project.name}</DialogTitle>
+                <DialogDescription>{project.location} · {project.latitude?.toFixed(6)}, {project.longitude?.toFixed(6)}</DialogDescription>
+              </DialogHeader>
+              <ProjectMap latitude={project.latitude!} longitude={project.longitude!} title={project.name} className="h-[55vh] min-h-72 w-full rounded-md" />
+              <a className="text-sm text-primary hover:underline" href={`https://www.google.com/maps?q=${project.latitude},${project.longitude}`} target="_blank" rel="noopener noreferrer">Open in Google Maps</a>
+            </DialogContent>
+          )}
+        </Dialog>
+      );
+    },
   },
   {
     accessorKey: "type",
@@ -161,9 +203,11 @@ const columns: ColumnDef<Project>[] = [
                 View Inventory
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem>
-              <Edit className="mr-2 h-4 w-4" />
-              Edit
+            <DropdownMenuItem asChild>
+              <Link href={`/projects/${project.id}?editLocation=1`}>
+                <Edit className="mr-2 h-4 w-4" />
+                Edit project / location
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuItem className="text-destructive">
               <Trash2 className="mr-2 h-4 w-4" />
@@ -183,6 +227,82 @@ export default function ProjectsPage() {
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [totalItems, setTotalItems] = React.useState(0);
   const [isLoading, setIsLoading] = React.useState(true);
+  const [createDialogOpen, setCreateDialogOpen] = React.useState(false);
+  const [isCreating, setIsCreating] = React.useState(false);
+  const [projectName, setProjectName] = React.useState("");
+  const [address, setAddress] = React.useState("");
+  const [city, setCity] = React.useState("");
+  const [state, setState] = React.useState("");
+  const [latitude, setLatitude] = React.useState("");
+  const [longitude, setLongitude] = React.useState("");
+  const [radius, setRadius] = React.useState("100");
+  const [totalUnits, setTotalUnits] = React.useState("0");
+
+  const resetCreateForm = () => {
+    setProjectName("");
+    setAddress("");
+    setCity("");
+    setState("");
+    setLatitude("");
+    setLongitude("");
+    setRadius("100");
+    setTotalUnits("0");
+  };
+
+  const createProject = async () => {
+    const parsedLatitude = Number(latitude);
+    const parsedLongitude = Number(longitude);
+    const parsedRadius = Number(radius);
+    const parsedTotalUnits = Number(totalUnits);
+    if (!projectName.trim() || !address.trim() ||
+        !latitude.trim() || !longitude.trim() ||
+        !Number.isFinite(parsedLatitude) || parsedLatitude < -90 || parsedLatitude > 90 ||
+        !Number.isFinite(parsedLongitude) || parsedLongitude < -180 || parsedLongitude > 180 ||
+        !Number.isInteger(parsedRadius) || parsedRadius < 1 || parsedRadius > 5000 ||
+        !Number.isInteger(parsedTotalUnits) || parsedTotalUnits < 0) {
+      toast({
+        title: "Check project details",
+        description: "Enter a project name, exact location, valid map coordinates, an allowed radius from 1 to 5000 meters, and a non-negative whole number of units.",
+        variant: "destructive" as any,
+      });
+      return;
+    }
+
+    try {
+      setIsCreating(true);
+      const response = await projectApi.create({
+        name: projectName.trim(),
+        address: address.trim(),
+        city: city.trim() || undefined,
+        state: state.trim() || undefined,
+        latitude: parsedLatitude,
+        longitude: parsedLongitude,
+        allowedRadiusMeters: parsedRadius,
+        totalUnits: parsedTotalUnits,
+      });
+      const created = response.data?.data;
+      if (!response.data?.success || !created?.id) {
+        throw new Error(response.data?.error || "The project was not created.");
+      }
+
+      setCreateDialogOpen(false);
+      resetCreateForm();
+      toast({
+        title: "Upcoming project created",
+        description: response.data.warning || `${created.name} is ready with its saved map location.`,
+        variant: response.data.warning ? "destructive" as any : undefined,
+      });
+      router.push(`/projects/${created.id}`);
+    } catch (error: any) {
+      toast({
+        title: "Unable to create project",
+        description: error?.response?.data?.error || error?.message || "Try again.",
+        variant: "destructive" as any,
+      });
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
   React.useEffect(() => {
     const fetchProjects = async () => {
@@ -236,7 +356,7 @@ export default function ProjectsPage() {
             Manage your real estate projects and inventory
           </p>
         </div>
-        <Button onClick={() => toast({ title: "New Project", description: "Create project form coming soon" })}>
+        <Button onClick={() => setCreateDialogOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
           New Project
         </Button>
@@ -298,6 +418,55 @@ export default function ProjectsPage() {
           onPageChange={setCurrentPage}
           serverPagination
         />
+
+      <Dialog open={createDialogOpen} onOpenChange={(open) => {
+          if (!isCreating) {
+            setCreateDialogOpen(open);
+            if (!open) resetCreateForm();
+          }
+      }}>
+          <DialogContent className="max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Create Upcoming Project</DialogTitle>
+              <DialogDescription>Add the project’s exact location and map coordinates now. It will be available for leads and site visits while the project is being planned.</DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-2 sm:grid-cols-2">
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="new-project-name">Project name *</Label>
+                <Input id="new-project-name" value={projectName} onChange={(event) => setProjectName(event.target.value)} maxLength={200} />
+              </div>
+              <div className="sm:col-span-2">
+                <ProjectLocationFields
+                  idPrefix="new-project"
+                  address={address}
+                  city={city}
+                  state={state}
+                  latitude={latitude}
+                  longitude={longitude}
+                  onAddressChange={setAddress}
+                  onCityChange={setCity}
+                  onStateChange={setState}
+                  onLatitudeChange={setLatitude}
+                  onLongitudeChange={setLongitude}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-project-radius">Allowed site-visit radius (meters)</Label>
+                <Input id="new-project-radius" type="number" min="1" max="5000" step="1" value={radius} onChange={(event) => setRadius(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-project-units">Planned units</Label>
+                <Input id="new-project-units" type="number" min="0" step="1" value={totalUnits} onChange={(event) => setTotalUnits(event.target.value)} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCreateDialogOpen(false)} disabled={isCreating}>Cancel</Button>
+              <Button onClick={createProject} disabled={isCreating}>
+                {isCreating ? "Creating..." : "Create upcoming project"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { permissionApi, profileApi, profileSecurityApi } from "@/lib/api";
+import { companyApi, permissionApi, profileApi, profileSecurityApi } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 
 type Scope = "OWN" | "TEAM" | "ALL";
 type ObjectPermission = { objectId: string; canCreate: boolean; canRead: boolean; canUpdate: boolean; canDelete: boolean; viewAll: boolean; modifyAll: boolean };
@@ -22,7 +23,11 @@ const actions = ["CREATE", "READ", "UPDATE", "DELETE"] as const;
 
 export default function SetupProfilesPage() {
   const { toast } = useToast();
+  const { isSuperAdmin } = useAuth();
+  const [companies, setCompanies] = React.useState<Array<{ id: string; name: string; slug: string }>>([]);
+  const [profileTenantId, setProfileTenantId] = React.useState("");
   const [profiles, setProfiles] = React.useState<any[]>([]);
+  const profileLoadId = React.useRef(0);
   const [selected, setSelected] = React.useState<any>(null);
   const [security, setSecurity] = React.useState<SecurityData | null>(null);
   const [search, setSearch] = React.useState("");
@@ -36,27 +41,90 @@ export default function SetupProfilesPage() {
   const [createAdmin, setCreateAdmin] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
 
+  React.useEffect(() => {
+    if (!isSuperAdmin) return;
+    let active = true;
+    companyApi.list({ limit: 100 })
+      .then((response) => {
+        const availableCompanies = (response.data.data || [])
+          .filter((company: { id?: string; name?: string; slug?: string }) =>
+            company.id && company.name && company.slug !== "platform",
+          );
+        if (active) {
+          setCompanies(availableCompanies);
+          setProfileTenantId((currentTenantId) =>
+            availableCompanies.some((company: { id: string }) => company.id === currentTenantId)
+              ? currentTenantId
+              : availableCompanies[0]?.id || "",
+          );
+        }
+      })
+      .catch((error: any) => {
+        if (active) {
+          toast({ title: "Unable to load companies", description: error?.response?.data?.error || error.message, variant: "destructive" as any });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [isSuperAdmin, toast]);
+
   const loadProfiles = React.useCallback(async () => {
+    const loadId = ++profileLoadId.current;
+    if (isSuperAdmin && !profileTenantId) {
+      setProfiles([]);
+      setSelected(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const response = await profileApi.list({ limit: 100 });
+      const response = await profileApi.list({
+        limit: 100,
+        ...(isSuperAdmin ? { tenantId: profileTenantId } : {}),
+      });
       const data = response.data.data || [];
-      setProfiles(data);
-      if (!selected && data[0]) setSelected(data[0]);
+      if (loadId === profileLoadId.current) {
+        setProfiles(data);
+        setSelected((current: any) =>
+          current && data.some((item: any) => item.id === current.id)
+            ? current
+            : data[0] || null,
+        );
+      }
     } catch (error: any) {
-      toast({ title: "Unable to load profiles", description: error?.response?.data?.error || error.message, variant: "destructive" as any });
-    } finally { setLoading(false); }
-  }, [selected, toast]);
+      if (loadId === profileLoadId.current) {
+        toast({ title: "Unable to load profiles", description: error?.response?.data?.error || error.message, variant: "destructive" as any });
+      }
+    } finally {
+      if (loadId === profileLoadId.current) setLoading(false);
+    }
+  }, [isSuperAdmin, profileTenantId, toast]);
 
   React.useEffect(() => { void loadProfiles(); }, [loadProfiles]);
 
   React.useEffect(() => {
-    if (!selected) return;
+    if (!selected) {
+      setSecurity(null);
+      return;
+    }
+    let active = true;
     setLoadingSecurity(true);
     profileSecurityApi.get(selected.id)
-      .then((response) => setSecurity(response.data.data))
-      .catch((error: any) => toast({ title: "Unable to load profile security", description: error?.response?.data?.error || error.message, variant: "destructive" as any }))
-      .finally(() => setLoadingSecurity(false));
+      .then((response) => {
+        if (active) setSecurity(response.data.data);
+      })
+      .catch((error: any) => {
+        if (active) {
+          toast({ title: "Unable to load profile security", description: error?.response?.data?.error || error.message, variant: "destructive" as any });
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingSecurity(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [selected, toast]);
 
   const getPermissionNameForObject = (objectName: string, permissionKey: keyof ObjectPermission) => {
@@ -137,9 +205,18 @@ export default function SetupProfilesPage() {
       toast({ title: "Profile name required", description: "Enter a profile name before creating it.", variant: "destructive" as any });
       return;
     }
+    if (isSuperAdmin && !profileTenantId) {
+      toast({ title: "Company required", description: "Select a company before creating a profile.", variant: "destructive" as any });
+      return;
+    }
     setCreating(true);
     try {
-      const response = await profileApi.create({ name: createName.trim(), description: createDescription.trim(), isAdmin: createAdmin });
+      const response = await profileApi.create({
+        name: createName.trim(),
+        description: createDescription.trim(),
+        ...(isSuperAdmin ? { isAdmin: createAdmin } : {}),
+        ...(isSuperAdmin ? { tenantId: profileTenantId } : {}),
+      });
       const created = response.data.data;
       setCreateOpen(false);
       setCreateName("");
@@ -159,11 +236,12 @@ export default function SetupProfilesPage() {
 
   return <div className="space-y-6">
     <div className="flex items-start justify-between gap-4"><div className="flex items-center gap-3"><Link href="/setup" className="text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /></Link><div><p className="text-sm text-muted-foreground">Setup / Security Control</p><h1 className="text-xl font-semibold">Profiles</h1><p className="text-sm text-muted-foreground">Define the baseline access applied to users in your company.</p></div></div><Button onClick={() => setCreateOpen(true)}>Create Profile</Button></div>
+    {isSuperAdmin && <div className="max-w-md space-y-2"><Label htmlFor="profile-company">Company</Label><select id="profile-company" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={profileTenantId} onChange={(event) => { setSelected(null); setSecurity(null); setProfiles([]); setLoading(true); setProfileTenantId(event.target.value); }}><option value="">Select a company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></div>}
     <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
       <Card className="h-fit"><CardHeader><CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" /> Profile list</CardTitle><div className="relative"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input className="pl-9" placeholder="Search profiles" value={search} onChange={(event) => setSearch(event.target.value)} /></div></CardHeader><CardContent className="space-y-2">{loading ? <p className="text-sm text-muted-foreground">Loading profiles...</p> : filteredProfiles.map((profile) => <button key={profile.id} type="button" onClick={() => { setSelected(profile); setTab("overview"); }} className={`w-full rounded-md border p-3 text-left ${selected?.id === profile.id ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}><div className="flex items-center justify-between gap-2"><span className="font-medium">{profile.name}</span>{profile.isAdmin && <Badge>Admin</Badge>}</div><p className="mt-1 text-xs text-muted-foreground">{profile.description || "No description"}</p><p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground"><Users className="h-3 w-3" /> {profile._count?.users || 0} users</p></button>)}</CardContent></Card>
       <Card><CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><div><CardTitle>{selected?.name || "Select a profile"}</CardTitle><p className="mt-1 text-sm text-muted-foreground">{selected?.description || "Choose a profile to configure its security model."}</p></div><Button onClick={save} disabled={!security || saving}><Save className="mr-2 h-4 w-4" />{saving ? "Saving..." : "Save profile"}</Button></div><div className="flex flex-wrap gap-2 border-b pt-4">{["overview", "objects", "records", "system"].map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`border-b-2 px-3 py-2 text-sm capitalize ${tab === item ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{item === "objects" ? "Modules & Actions" : item === "records" ? "Record Access" : item === "system" ? "Reports, Dashboards & System" : item}</button>)}</div></CardHeader><CardContent>{loadingSecurity ? <p className="py-10 text-sm text-muted-foreground">Loading profile security...</p> : !security ? <p className="py-10 text-sm text-muted-foreground">Select a profile.</p> : <ProfileEditor tab={tab} security={security} modules={modules} systemPermissions={systemPermissions} updateObject={updateObject} toggleSystemPermission={toggleSystemPermission} setSecurity={setSecurity} />}</CardContent></Card>
     </div>
-    <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent><DialogHeader><DialogTitle>Create Setup Profile</DialogTitle></DialogHeader><div className="grid gap-4 py-3"><div><Label htmlFor="setup-profile-name">Profile name</Label><Input id="setup-profile-name" value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder="Sales Executive" /></div><div><Label htmlFor="setup-profile-description">Description</Label><Input id="setup-profile-description" value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Own leads and site visits" /></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={createAdmin} onChange={(event) => setCreateAdmin(event.target.checked)} /> Profile administrator</label></div><DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={createProfile} disabled={creating}>{creating ? "Creating..." : "Create Profile"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent><DialogHeader><DialogTitle>Create Setup Profile</DialogTitle></DialogHeader><div className="grid gap-4 py-3"><div><Label htmlFor="setup-profile-name">Profile name</Label><Input id="setup-profile-name" value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder="Sales Executive" /></div><div><Label htmlFor="setup-profile-description">Description</Label><Input id="setup-profile-description" value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Own leads and site visits" /></div>{isSuperAdmin && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={createAdmin} onChange={(event) => setCreateAdmin(event.target.checked)} /> Profile administrator</label>}</div><DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={createProfile} disabled={creating || (isSuperAdmin && !profileTenantId)}>{creating ? "Creating..." : "Create Profile"}</Button></DialogFooter></DialogContent></Dialog>
   </div>;
 }
 

@@ -142,7 +142,7 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
       data.opportunityId
         ? prisma.opportunity.findFirst({
             where: { id: data.opportunityId, tenantId },
-            select: { id: true, tenantId: true, ownerId: true, creatorId: true, leadId: true, projectId: true },
+            select: { id: true, tenantId: true, ownerId: true, creatorId: true, leadId: true, projectId: true, stage: true },
           })
         : null,
       data.quotationId
@@ -242,6 +242,45 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
           newValues: { number: bookingNumber, unitId: data.unitId, totalAmount: data.totalAmount },
         },
       });
+      if (opportunity && !['CLOSED_WON', 'CLOSED_LOST'].includes(opportunity.stage)) {
+        await tx.opportunity.update({ where: { id: opportunity.id }, data: { stage: 'CLOSED_WON' } });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            opportunityId: opportunity.id,
+            bookingId: created.id,
+            action: 'UPDATE',
+            objectType: 'Opportunity',
+            objectId: opportunity.id,
+            oldValues: { stage: opportunity.stage },
+            newValues: { stage: 'CLOSED_WON', bookingId: created.id },
+          },
+        });
+      }
+      const linkedLeadId = data.leadId || opportunity?.leadId || quotation?.leadId;
+      if (linkedLeadId) {
+        const linkedLead = await tx.lead.findFirst({
+          where: { id: linkedLeadId, tenantId },
+          select: { id: true, status: true },
+        });
+        if (linkedLead && linkedLead.status !== 'BOOKED') {
+          await tx.lead.update({ where: { id: linkedLead.id }, data: { status: 'BOOKED' } });
+          await tx.auditLog.create({
+            data: {
+              tenantId,
+              userId,
+              leadId: linkedLead.id,
+              bookingId: created.id,
+              action: 'UPDATE',
+              objectType: 'Lead',
+              objectId: linkedLead.id,
+              oldValues: { status: linkedLead.status },
+              newValues: { status: 'BOOKED', bookingId: created.id },
+            },
+          });
+        }
+      }
       return created;
     });
 

@@ -16,12 +16,10 @@ import {
   TrendingUp,
   FileText,
   CalendarCheck,
-  CalendarDays,
   CreditCard,
   FolderKanban,
   CheckSquare,
   BarChart3,
-  FileCode2,
   Settings,
   ChevronRight,
   Clock3,
@@ -78,19 +76,11 @@ export function getNavigationByProfile(
   if (hasEffectivePermission("TASK_READ")) {
     nav.push({ title: "Tasks", href: "/tasks", icon: CheckSquare });
   }
-  if (hasEffectivePermission("ACTIVITY_READ")) {
-    nav.push({ title: "Calendar", href: "/calendar", icon: CalendarDays });
-  }
   // Dashboards nav: admin-only per sidebar spec ("Presales/SVC must see ONLY
   // Home, Leads, Site Visits"). DASHBOARD_READ alone is NOT sufficient — every
   // profile holds it because the home page API (homepages.ts) requires it.
   if ((isSuperAdmin || isAdmin) && hasEffectivePermission("DASHBOARD_READ")) {
     nav.push({ title: "Dashboards", href: "/dashboards", icon: LayoutDashboard });
-  }
-  if (isAdmin && !isSuperAdmin) {
-    nav.push({ title: "Pre Sales", href: "/profiles/pre-sales", icon: Users });
-    nav.push({ title: "Sales", href: "/profiles/sales", icon: TrendingUp });
-    nav.push({ title: "SVC", href: "/profiles/svc", icon: Users });
   }
   // Reports is always offered in the nav; actual report access is enforced
   // server-side by authorize('Report', 'read') on every reports endpoint.
@@ -100,7 +90,6 @@ export function getNavigationByProfile(
   }
 
   if (isSuperAdmin || isAdmin) {
-    nav.push({ title: "GRE Forms", href: "/setup/developer/gre", icon: FileCode2 });
     nav.push({ title: "Setup Home", href: "/setup", icon: Settings });
   }
 

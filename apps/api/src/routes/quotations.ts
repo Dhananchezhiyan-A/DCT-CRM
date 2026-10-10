@@ -130,72 +130,146 @@ router.get('/:id', authorize('Quotation', 'read'), async (req: AuthRequest, res:
 
 router.get('/:id/pdf', authorize('Quotation', 'read'), async (req: AuthRequest, res: Response) => {
   try {
-    const { tenantId } = req.user!;
-
     const quotation = await prisma.quotation.findFirst({
-      where: { id: req.params.id, tenantId },
+      where: { id: req.params.id, tenantId: req.user!.tenantId },
       include: {
-        lead: { select: { firstName: true, lastName: true, email: true, phone: true } },
-        opportunity: { select: { name: true, stage: true, amount: true } },
-        project: { select: { name: true } },
-        items: { include: { unit: { select: { number: true } } } },
+        lead: {
+          select: {
+            firstName: true, lastName: true, phone: true, mobile: true, email: true,
+            street: true, city: true, stateProvince: true, postalCode: true, country: true,
+          },
+        },
+        project: { select: { name: true, city: true, address: true } },
+        items: { include: { unit: { select: { number: true, type: true, area: true } } } },
       },
     });
 
-    if (!quotation) {
-      return res.status(404).json({ success: false, error: 'Quotation not found' });
-    }
-
+    if (!quotation) return res.status(404).json({ success: false, error: 'Quotation not found' });
     if (!(await canAccessQuotation(req.user!, quotation))) {
       return res.status(403).json({ success: false, error: 'You do not have access to this quotation' });
     }
 
-    const document = new PDFDocument({ margin: 48, size: 'A4' });
-    const chunks: Buffer[] = [];
-    document.on('data', (chunk: Buffer) => chunks.push(chunk));
-    document.on('end', () => {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${(quotation.number || 'quotation').replace(/[^a-z0-9-]+/gi, '-').toLowerCase()}.pdf"`,
-      );
-      res.send(Buffer.concat(chunks));
-    });
+    const quotationMetadataPrefix = 'QUOTE_PDF_DATA:';
+    let quotationMetadata: {
+      customerName?: string;
+      mobile?: string;
+      email?: string;
+      address?: string;
+      paymentPlan?: '10-90' | '10-40-50';
+    } = {};
+    if (quotation.notes?.startsWith(quotationMetadataPrefix)) {
+      try {
+        quotationMetadata = JSON.parse(quotation.notes.slice(quotationMetadataPrefix.length));
+      } catch {
+        quotationMetadata = {};
+      }
+    }
 
-    const leadName = [quotation.lead?.firstName, quotation.lead?.lastName].filter(Boolean).join(' ');
-    const safe = (value: string | null | undefined, fallback = '-') => value || fallback;
+    const document = new PDFDocument({ size: 'A4', margin: 32 });
+    const filename = `${quotation.number.replace(/[^a-z0-9-]/gi, '-')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    document.pipe(res);
 
-    document.fontSize(18).text('Quotation').moveDown(0.4);
-    document.fontSize(11).text(safe(quotation.number));
-    document.moveDown(0.8);
+    const issueDate = quotation.createdAt;
+    const addDays = (date: Date, days: number) => {
+      const result = new Date(date);
+      result.setUTCDate(result.getUTCDate() + days);
+      return result;
+    };
+    const dateText = (date: Date) => new Intl.DateTimeFormat('en-GB', {
+      day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC',
+    }).format(date);
+    const money = (amount: number) => `INR ${new Intl.NumberFormat('en-IN', {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    }).format(amount)}`;
+    const info = (label: string, value?: string | null) => {
+      document.x = 44;
+      document.font('Helvetica-Bold').fontSize(9).fillColor('#334155').text(`${label}: `, { continued: true });
+      document.font('Helvetica').fillColor('#111827').text(value || '—');
+      document.moveDown(0.05);
+    };
+    const section = (title: string) => {
+      document.x = 44;
+      document.moveDown(0.45).font('Helvetica-Bold').fontSize(11).fillColor('#26384a').text(title);
+      document.moveTo(44, document.y + 3).lineTo(551, document.y + 3).strokeColor('#cbd5e1').stroke();
+      document.moveDown(0.3);
+    };
 
-    document.fontSize(10);
-    document.text(`Status: ${safe(quotation.status)}`);
-    document.text(`Project: ${safe(quotation.project?.name)}`);
-    document.text(`Customer: ${safe(leadName)}`);
-    document.text(`Opportunity: ${safe(quotation.opportunity?.name)}`);
-    document.text(`Created: ${quotation.createdAt ? new Date(quotation.createdAt).toISOString().slice(0, 10) : '-'}`);
-    document.moveDown(1);
+    const leadName = quotationMetadata.customerName || [quotation.lead?.firstName, quotation.lead?.lastName].filter(Boolean).join(' ') || '—';
+    const address = quotationMetadata.address || [quotation.lead?.street, quotation.lead?.city, quotation.lead?.stateProvince, quotation.lead?.postalCode, quotation.lead?.country]
+      .filter(Boolean).join(', ') || '—';
+    const firstUnit = quotation.items.find((item) => item.unit)?.unit;
+    const total = quotation.totalAmount;
+    const planIsTenFortyFifty = quotationMetadata.paymentPlan === '10-40-50';
+    const installments = planIsTenFortyFifty
+      ? [
+          { label: 'Booking Payment', percentage: 10, dueDays: 0, milestone: 'At booking' },
+          { label: 'Installment 1', percentage: 40, dueDays: 10, milestone: 'Within 10 days of booking' },
+          { label: 'Installment 2', percentage: 50, dueDays: 30, milestone: 'Within 30 days of booking' },
+        ]
+      : [
+          { label: 'Installment 1', percentage: 10, dueDays: 10, milestone: 'Within 10 days of booking' },
+          { label: 'Installment 2', percentage: 90, dueDays: 30, milestone: 'Within 30 days of booking' },
+        ];
 
-    document.fontSize(12).text('Items').moveDown(0.4);
-    document.fontSize(9).text('Description | Qty | Unit Price | Total');
+    document.font('Helvetica-Bold').fontSize(19).fillColor('#26384a').text('PROPERTY INVESTMENT QUOTATION', { align: 'center' });
+    document.moveDown(0.45);
+    info('Quotation No.', quotation.number);
+    info('Date', dateText(issueDate));
+
+    section('Customer Details');
+    info('Customer Name', leadName);
+    info('Mobile', quotationMetadata.mobile || quotation.lead?.mobile || quotation.lead?.phone);
+    info('Email', quotationMetadata.email || quotation.lead?.email);
+    info('Address', address);
+
+    section('Property Details');
+    info('Project', quotation.project?.name);
+    info('Location', quotation.project?.city || quotation.project?.address);
+    info('Unit No.', firstUnit?.number);
+    info('Type', firstUnit?.type);
+    info('Saleable Area', firstUnit?.area ? `${new Intl.NumberFormat('en-IN').format(firstUnit.area)} sq.ft` : undefined);
+    info('Property Description', quotation.items.map((item) => item.description).join(', '));
+
+    section(planIsTenFortyFifty ? 'Standard 1-Month Plan' : 'Standard 1-Month 10-90 Plan');
+    const columns = [44, 145, 225, 335, 435];
+    const headers = ['Installment', 'Percentage', 'Amount', 'Date', 'Milestone'];
+    const widths = [96, 75, 105, 92, 116];
+    const drawTableRow = (values: string[], bold = false) => {
+      const rowY = document.y;
+      document.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8).fillColor('#1f2937');
+      values.forEach((value, index) => document.text(value, columns[index], rowY, { width: widths[index] }));
+      document.y = rowY + 19;
+      document.moveTo(44, document.y).lineTo(551, document.y).strokeColor('#e2e8f0').stroke();
+      document.moveDown(0.25);
+    };
+    drawTableRow(headers, true);
+    installments.forEach((installment) => drawTableRow([
+      installment.label,
+      `${installment.percentage}%`,
+      money(total * installment.percentage / 100),
+      dateText(addDays(issueDate, installment.dueDays)),
+      installment.milestone,
+    ]));
+    drawTableRow(['TOTAL', '100%', money(total), '', ''], true);
+
+    section('Terms & Conditions');
+    [
+      'Quotation valid for 30 days from issue date.',
+      'All payments must follow the schedule.',
+      'Handover on completion of all milestones.',
+      'Government fees and charges are applicable.',
+      'Contact your sales representative for clarifications.',
+    ].forEach((term) => document.font('Helvetica').fontSize(8.5).fillColor('#1f2937').text(`• ${term}`, { indent: 8, paragraphGap: 2 }));
+    document.moveDown(0.55);
+    document.font('Helvetica-Bold').fontSize(10).text('Thank you for your interest.', { align: 'center' });
     document.moveDown(0.2);
-    document.fontSize(9);
-    quotation.items.forEach((item) => {
-      document.text(
-        `${item.description} | ${item.quantity} | ${item.unitPrice} | ${item.totalPrice}`,
-      );
-    });
-
-    document.moveDown(1);
-    document.fontSize(11).text(`Total: ${quotation.totalAmount}`);
-    document.moveDown(1);
-    document.fontSize(8).fillColor('#666666').text('Generated by DCT CRM', { align: 'left' });
-
+    document.font('Helvetica-Oblique').fontSize(8).fillColor('#64748b').text('This is a computer-generated quotation and does not require a signature.', { align: 'center' });
     document.end();
   } catch (error) {
-    console.error('Download quotation pdf error:', error);
-    res.status(500).json({ success: false, error: 'Failed to download quotation PDF' });
+    console.error('Download quotation PDF error:', error);
+    if (!res.headersSent) res.status(500).json({ success: false, error: 'Failed to generate quotation PDF' });
   }
 });
 
@@ -211,7 +285,7 @@ router.post('/', authorize('Quotation', 'create'), async (req: AuthRequest, res:
       data.opportunityId
         ? prisma.opportunity.findFirst({
             where: { id: data.opportunityId, tenantId },
-            select: { id: true, tenantId: true, ownerId: true, creatorId: true, leadId: true, projectId: true },
+            select: { id: true, tenantId: true, ownerId: true, creatorId: true, leadId: true, projectId: true, stage: true },
           })
         : null,
       data.projectId
@@ -308,6 +382,21 @@ router.post('/', authorize('Quotation', 'create'), async (req: AuthRequest, res:
           newValues: { number: quotationNumber, totalAmount, itemCount: items.length },
         },
       });
+      if (opportunity && ['PROSPECTING', 'QUALIFICATION', 'NEEDS_ANALYSIS'].includes(opportunity.stage)) {
+        await tx.opportunity.update({ where: { id: opportunity.id }, data: { stage: 'PROPOSAL' } });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            opportunityId: opportunity.id,
+            action: 'UPDATE',
+            objectType: 'Opportunity',
+            objectId: opportunity.id,
+            oldValues: { stage: opportunity.stage },
+            newValues: { stage: 'PROPOSAL', quotationId: created.id },
+          },
+        });
+      }
       return created;
     });
 

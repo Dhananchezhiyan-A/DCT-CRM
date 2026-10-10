@@ -1,14 +1,16 @@
 import { Prisma } from '@prisma/client';
 import { leadCreateSchema, normalizePhone } from '@dct-crm/shared';
 import { prisma } from '@dct-crm/db';
-import { createOwnerHistory } from './ownerHistory';
 import { getNextSiteVisitNumber } from './leadWorkflowExtras';
-import { createEnquiryInTransaction } from './enquiryService';
+import { createOwnerHistory } from './ownerHistory';
 import {
+  assignLeadToProjectRoundRobinInTransaction,
+  assignSiteVisitToSVCInTransaction,
   findApplicableRRQueue,
   isLeadEligibleForAutoAssignment,
   RoundRobinAssignmentService,
 } from './rrQueue';
+import { createEnquiryInTransaction } from './enquiryService';
 
 export type EnquiryAction =
   | 'NEW_LEAD'
@@ -241,12 +243,14 @@ export async function processLeadEnquiry(input: {
     }
     const createSiteVisit = async (leadId: string) => {
       if (!input.siteVisit) return null;
+      const projectId = input.siteVisit.projectId || input.lead.projectId || null;
+      if (!projectId) throw new Error('INVALID_PROJECT');
       const siteVisitNumber = await getNextSiteVisitNumber(tx, input.tenantId);
       const siteVisit = await tx.siteVisit.create({
         data: {
           tenantId: input.tenantId,
           leadId,
-          projectId: input.siteVisit.projectId || input.lead.projectId || null,
+          projectId,
           creatorId: input.userId,
           siteVisitNumber,
           scheduledAt: input.siteVisit.scheduledAt,
@@ -254,6 +258,11 @@ export async function processLeadEnquiry(input: {
           notes: input.siteVisit.notes,
         },
         select: { id: true, siteVisitNumber: true, projectId: true, scheduledAt: true, status: true },
+      });
+      await assignSiteVisitToSVCInTransaction(tx, {
+        siteVisitId: siteVisit.id,
+        tenantId: input.tenantId,
+        actorId: input.userId,
       });
       await tx.auditLog.create({
         data: {
@@ -319,7 +328,7 @@ export async function processLeadEnquiry(input: {
           ? 'OUTSIDE_REENGAGEMENT_WINDOW'
           : 'ADDITIONAL';
 
-      const updated = await tx.lead.update({
+      await tx.lead.update({
         where: { id: existing.id },
         data: {
           lastSource: metadata.source,
@@ -383,7 +392,13 @@ export async function processLeadEnquiry(input: {
           leadQueueing: true,
           leadAssigned: false,
         }, { isNewLead: true })) {
-          assignment = await RoundRobinAssignmentService.assignLeadInTransaction(tx, rrQueue.id, existing.id, input.tenantId);
+          assignment = await RoundRobinAssignmentService.assignLeadInTransaction(
+            tx,
+            rrQueue.id,
+            existing.id,
+            input.tenantId,
+            input.userId,
+          );
         }
         const assignedLead = await tx.lead.findUnique({ where: { id: existing.id }, select: { ownerId: true } });
         if (assignedLead?.ownerId !== existing.ownerId) {
@@ -425,6 +440,7 @@ export async function processLeadEnquiry(input: {
           },
         },
       });
+      const siteVisit = await createSiteVisit(existing.id);
       const lead = await tx.lead.findUnique({
         where: { id: existing.id },
         include: {
@@ -432,7 +448,6 @@ export async function processLeadEnquiry(input: {
           project: { select: { id: true, name: true } },
         },
       });
-      const siteVisit = await createSiteVisit(existing.id);
       return { action, lead, leadId: existing.id, enquiry, validationDays, daysDifference, assignment, siteVisit };
     }
 
@@ -479,6 +494,42 @@ export async function processLeadEnquiry(input: {
         project: { select: { id: true, name: true } },
       },
     });
+    await createOwnerHistory({
+      tenantId: input.tenantId,
+      leadId: newLead.id,
+      previousOwnerId: null,
+      newOwnerId: input.userId,
+      previousProfile: null,
+      newProfile: input.profileName || null,
+      previousStatus: null,
+      newStatus: 'NEW',
+      handoffReason: 'Lead Created',
+      changedById: input.userId,
+    }, tx);
+    let assignment: unknown = null;
+    let assignmentWarning: string | undefined;
+    try {
+      assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+        tenantId: input.tenantId,
+        leadId: newLead.id,
+        projectId: newLead.projectId,
+        userType: 'Pre Sales',
+        actorId: input.userId,
+        reason: 'New lead assigned to Pre Sales round robin',
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('NO_ELIGIBLE_RR_MEMBER:')) {
+        throw error;
+      }
+      assignmentWarning = 'No eligible Pre Sales user is available; the lead remains assigned to its current owner.';
+    }
+    const assignedLead = await tx.lead.findUniqueOrThrow({
+      where: { id: newLead.id },
+      include: {
+        owner: { select: { id: true, firstName: true, lastName: true } },
+        project: { select: { id: true, name: true } },
+      },
+    });
     const enquiry = await createEnquiryInTransaction(tx, {
       tenantId: input.tenantId,
       leadId: newLead.id,
@@ -505,32 +556,6 @@ export async function processLeadEnquiry(input: {
       enquiryDate: metadata.enquiryDate,
       userId: input.userId,
     });
-    await createOwnerHistory({
-      tenantId: input.tenantId,
-      leadId: newLead.id,
-      previousOwnerId: null,
-      newOwnerId: input.userId,
-      previousProfile: null,
-      newProfile: input.profileName || null,
-      previousStatus: null,
-      newStatus: 'NEW',
-      handoffReason: 'Lead Created',
-      changedById: input.userId,
-    }, tx);
-    const rrQueue = await findApplicableRRQueue(input.tenantId, {
-      projectId: input.lead.projectId || null,
-      projectName: newLead.project?.name || null,
-      status: 'NEW',
-      source: metadata.source,
-    }, tx);
-    const assignment = rrQueue && isLeadEligibleForAutoAssignment({
-      ...newLead,
-      lastSourceOfEnquiry: metadata.source,
-      leadQueueing: true,
-      leadAssigned: false,
-    }, { isNewLead: true })
-      ? await RoundRobinAssignmentService.assignLeadInTransaction(tx, rrQueue.id, newLead.id, input.tenantId)
-      : null;
     await tx.auditLog.create({
       data: {
         tenantId: input.tenantId,
@@ -543,18 +568,19 @@ export async function processLeadEnquiry(input: {
           ...input.lead,
           source: metadata.source,
           enquiryType: 'ORIGINAL',
-          assignedTo: newLead.owner ? `${newLead.owner.firstName} ${newLead.owner.lastName}` : null,
+          assignedTo: assignedLead.owner ? `${assignedLead.owner.firstName} ${assignedLead.owner.lastName}` : null,
         },
       },
     });
-    const lead = await tx.lead.findUnique({
-      where: { id: newLead.id },
-      include: {
-        owner: { select: { id: true, firstName: true, lastName: true } },
-        project: { select: { id: true, name: true } },
-      },
-    });
     const siteVisit = await createSiteVisit(newLead.id);
-    return { action: 'NEW_LEAD' as const, lead, leadId: newLead.id, assignment, siteVisit, enquiry };
+    return {
+      action: 'NEW_LEAD' as const,
+      lead: assignedLead,
+      leadId: newLead.id,
+      assignment,
+      assignmentWarning,
+      siteVisit,
+      enquiry,
+    };
   });
 }

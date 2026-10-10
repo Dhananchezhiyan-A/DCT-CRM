@@ -43,6 +43,7 @@ export interface ApiResponse<T = any> {
   data?: T;
   error?: string;
   message?: string;
+  warning?: string;
   pagination?: {
     page: number;
     limit: number;
@@ -124,6 +125,8 @@ export const siteVisitApi = {
     api.patch<ApiResponse>(`/api/site-visits/${id}/cancel`, { reason }),
   revisit: (id: string, data: { reason: string; scheduledAt: string; projectId: string; assigneeId?: string; notes?: string }) =>
     api.post<ApiResponse>(`/api/site-visits/${id}/revisit`, data),
+  verifyLocation: (id: string, data: { latitude: number; longitude: number; accuracy: number; timestamp: number }) =>
+    api.post<ApiResponse>(`/api/site-visits/${id}/verify-location`, data),
 };
 
 // Opportunity API
@@ -222,6 +225,13 @@ export const projectApi = {
     api.post<ApiResponse>('/api/projects', data),
   update: (id: string, data: any) =>
     api.put<ApiResponse>(`/api/projects/${id}`, data),
+  parseMapUrl: (url: string) =>
+    api.post<ApiResponse<{ latitude: number; longitude: number }>>('/api/projects/parse-map-url', { url }),
+  reverseGeocode: (latitude: number, longitude: number) =>
+    api.post<ApiResponse<{ locationName: string; city: string | null; state: string | null }>>(
+      '/api/projects/geocode',
+      { latitude, longitude },
+    ),
   delete: (id: string) =>
     api.delete<ApiResponse>(`/api/projects/${id}`),
 };
@@ -740,6 +750,18 @@ export const companyApi = {
     api.put<ApiResponse>(`/api/super-admin/companies/${id}/package`, data),
 };
 
+export const roundRobinApi = {
+  getAll: () => api.get<ApiResponse>('/api/round-robin'),
+  getPool: (poolType: string) => api.get<ApiResponse>(`/api/round-robin/${poolType}`),
+  addMember: (userId: string, poolType: string) => api.post<ApiResponse>('/api/round-robin', { userId, poolType }),
+  removeMember: (id: string) => api.delete<ApiResponse>(`/api/round-robin/${id}`),
+  getEligible: (poolType: string) => api.get<ApiResponse>(`/api/round-robin/eligible/${poolType}`),
+  getConfigs: () => api.get<ApiResponse>('/api/round-robin/configs'),
+  createConfig: (data: { poolType: string; name: string; description?: string; profileName: string }) => api.post<ApiResponse>('/api/round-robin/configs', data),
+  deleteConfig: (id: string) =>
+    api.delete<ApiResponse>(`/api/round-robin/configs/${id}`),
+};
+
 // Customize Home (Homepage layouts per profile)
 export const homepageApi = {
   list: () =>
@@ -760,13 +782,13 @@ export const rrQueueApi = {
   list: (params?: Record<string, string>) => api.get<ApiResponse>('/api/rrqueues', { params }),
   options: () => api.get<ApiResponse>('/api/rrqueues/options'),
   get: (id: string) => api.get<ApiResponse>(`/api/rrqueues/${id}`),
-  create: (data: { name: string; leadStatus: string[]; projectInterested: string[]; excludeFromNoSource: string[]; presalesQueue: boolean; ownerId?: string | null; leadCount?: number; previousId?: number }) => api.post<ApiResponse>('/api/rrqueues', data),
-  update: (id: string, data: Partial<{ name: string; leadStatus: string[]; projectInterested: string[]; excludeFromNoSource: string[]; presalesQueue: boolean; ownerId: string | null }>) => api.put<ApiResponse>(`/api/rrqueues/${id}`, data),
+  create: (data: { name: string; projectId: string; active?: boolean; leadStatus?: string[]; leadSource?: string[]; projectInterested?: string[]; ownerId?: string | null }) => api.post<ApiResponse>('/api/rrqueues', data),
+  update: (id: string, data: Partial<{ name: string; projectId: string; active: boolean; leadStatus: string[]; leadSource: string[]; projectInterested: string[]; ownerId: string | null }>) => api.put<ApiResponse>(`/api/rrqueues/${id}`, data),
   remove: (id: string) => api.delete<ApiResponse>(`/api/rrqueues/${id}`),
   members: (id: string, params?: Record<string, number>) => api.get<ApiResponse>(`/api/rrqueues/${id}/members`, { params }),
   member: (id: string, memberId: string) => api.get<ApiResponse>(`/api/rrqueues/${id}/members/${memberId}`),
-  addMember: (id: string, data: { userId: string; userIdNumber?: string | null }) => api.post<ApiResponse>(`/api/rrqueues/${id}/members`, data),
-  updateMember: (id: string, memberId: string, data: { activeMember?: boolean; userId?: string; userIdNumber?: string | null }) => api.put<ApiResponse>(`/api/rrqueues/${id}/members/${memberId}`, data),
+  addMember: (id: string, data: { userId: string; userType: 'Pre Sales' | 'Sales' | 'Post Sales' | 'Recovery' | 'Channel Partner' | 'SVC' | 'CRM'; activeMember?: boolean }) => api.post<ApiResponse>(`/api/rrqueues/${id}/members`, data),
+  updateMember: (id: string, memberId: string, data: { activeMember?: boolean; userId?: string; userType?: 'Pre Sales' | 'Sales' | 'Post Sales' | 'Recovery' | 'Channel Partner' | 'SVC' | 'CRM'; isAvailable?: boolean; isWorking?: boolean; weekOff?: boolean; maxLeadCapacity?: number }) => api.put<ApiResponse>(`/api/rrqueues/${id}/members/${memberId}`, data),
   setMemberActive: (id: string, memberId: string, activeMember: boolean) => api.put<ApiResponse>(`/api/rrqueues/${id}/members/${memberId}`, { activeMember }),
   removeMember: (id: string, memberId: string) => api.delete<ApiResponse>(`/api/rrqueues/${id}/members/${memberId}`),
   history: (id: string, params?: Record<string, number>) => api.get<ApiResponse>(`/api/rrqueues/${id}/history`, { params }),

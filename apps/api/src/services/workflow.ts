@@ -15,6 +15,7 @@ export const PROFILE_STATUS_ACCESS: Record<string, LeadStatus[]> = {
   Presales: [LeadStatus.NEW, LeadStatus.INCOMING],
   'Sales Executive': [...VALID_LEAD_STATUSES],
   SVC: [LeadStatus.PROSPECT, LeadStatus.SITE_VISIT_SCHEDULED],
+  GRE: [LeadStatus.SITE_VISIT_SCHEDULED, LeadStatus.SITE_VISIT_HAPPENED],
   Sales: [LeadStatus.SITE_VISIT_SCHEDULED, LeadStatus.SITE_VISIT_HAPPENED],
   CRM: [LeadStatus.SITE_VISIT_HAPPENED, LeadStatus.BOOKED],
   Finance: [LeadStatus.BOOKED],
@@ -37,7 +38,7 @@ export const STATUS_TRANSITIONS: Record<string, { next: LeadStatus; profiles: st
     { next: LeadStatus.SITE_VISIT_SCHEDULED, profiles: ['SVC', 'Sales Executive', 'Admin', 'CRM Admin', 'Manager'] },
   ],
   [LeadStatus.SITE_VISIT_SCHEDULED]: [
-    { next: LeadStatus.SITE_VISIT_HAPPENED, profiles: ['SVC', 'Sales', 'Sales Executive', 'Admin', 'CRM Admin', 'Manager'] },
+    { next: LeadStatus.SITE_VISIT_HAPPENED, profiles: ['GRE', 'SVC', 'Sales', 'Sales Executive', 'Admin', 'CRM Admin', 'Manager'] },
     { next: LeadStatus.PROSPECT, profiles: ['SVC', 'Sales Executive', 'Admin', 'CRM Admin', 'Manager'] },
   ],
   [LeadStatus.SITE_VISIT_HAPPENED]: [

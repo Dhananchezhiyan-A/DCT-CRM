@@ -80,8 +80,23 @@ interface PublicLeadDetails {
   preferredLocation: string | null;
   occupation: string | null;
   gender: string | null;
+  city: string | null;
+  stateProvince: string | null;
+  country: string | null;
   project: { id: string; name: string; city: string | null } | null;
   siteVisits: { projectId: string | null; status: string; scheduledAt: string; visitType: string | null }[];
+  scheduledSiteVisits: {
+    id: string;
+    siteVisitNumber: string;
+    projectId: string | null;
+    project: { name: string } | null;
+    scheduledAt: string;
+    visitType: string | null;
+    visitorCount: number | null;
+    transportRequired: boolean | null;
+    notes: string | null;
+    assignee: { firstName: string; lastName: string } | null;
+  }[];
   companyAccount: {
     name: string;
     companyType: string | null;
@@ -599,14 +614,15 @@ export function GreRegistrationPage() {
       sessionStorage.setItem(`gre-session:${token}`, data.sessionToken);
       setLeadExists(Boolean(data.leadExists));
       setLeadDetails(data.leadDetails || null);
+      const selectedProjectId = data.leadDetails?.project?.id || meta?.defaultProjectId || "";
       setDraft({
         ...emptyDraft,
         lead: {
           ...emptyDraft.lead,
           secondaryPhone: data.alternatePhone || "",
-          projectId: meta?.defaultProjectId || "",
+          projectId: selectedProjectId,
         },
-        siteVisit: { ...emptyDraft.siteVisit, projectId: meta?.defaultProjectId || "" },
+        siteVisit: { ...emptyDraft.siteVisit, projectId: selectedProjectId },
       });
     } catch (error: any) {
       setErrorMessage(
@@ -638,10 +654,15 @@ export function GreRegistrationPage() {
         setSessionToken("");
         return;
       }
+      const errorMessage = error?.response?.data?.error || "Unable to submit your registration. Please try again.";
+      const errorDetail = process.env.NODE_ENV !== "production" ? error?.response?.data?.detail : null;
+      const errorStage = error?.response?.data?.stage;
       setErrorMessage(
         error?.response?.status === 429
           ? "This form is temporarily busy. Please wait a few minutes before submitting again."
-          : error?.response?.data?.error || "Unable to submit your registration. Please try again.",
+          : errorDetail ? `${errorMessage} (${errorDetail})`
+            : errorStage ? `${errorMessage} [${errorStage}]`
+              : errorMessage,
       );
     } finally {
       setIsBusy(false);
@@ -683,9 +704,11 @@ export function GreRegistrationPage() {
     setErrorMessage("");
   };
 
-  const scheduledVisitForSelectedProject = leadDetails?.siteVisits.find((visit) =>
-    visit.projectId === draft.siteVisit.projectId && visit.status === "SCHEDULED",
-  );
+  const scheduledVisitsForSelectedProject = (leadDetails?.scheduledSiteVisits || [])
+    .filter((visit) => visit.projectId === draft.siteVisit.projectId)
+    .sort((left, right) => new Date(left.scheduledAt).getTime() - new Date(right.scheduledAt).getTime());
+  const scheduledVisitForSelectedProject = scheduledVisitsForSelectedProject[0];
+  const scheduledVisits = leadDetails?.scheduledSiteVisits || [];
 
   if (isLoading) return <CenteredState><Loader2 className="h-6 w-6 animate-spin text-primary" /><span className="sr-only">Loading registration form</span></CenteredState>;
   if (errorMessage && !meta) return <CenteredState><StateCard><AlertCircle className="mx-auto h-8 w-8 text-destructive" /><h1 className="mt-4 text-lg font-semibold">Registration link unavailable</h1><p className="mt-2 text-sm text-muted-foreground">{errorMessage}</p></StateCard></CenteredState>;
@@ -754,9 +777,27 @@ export function GreRegistrationPage() {
                 <ReviewRow label="Preferred location" value={leadDetails.preferredLocation} />
                 <ReviewRow label="Industry" value={leadDetails.industry?.replaceAll("_", " ")} />
                 <ReviewRow label="Requirements" value={leadDetails.requirements} />
+                <ReviewRow label="Lead type" value={leadDetails.leadType} />
+                <ReviewRow label="Lead source" value={leadDetails.source} />
+                <ReviewRow label="Sub-source" value={leadDetails.leadSubSource} />
                 <ReviewRow label="Campaign" value={leadDetails.campaign} />
+                <ReviewRow label="Occupation" value={leadDetails.occupation} />
+                <ReviewRow label="Gender" value={leadDetails.gender} />
+                <ReviewRow label="City" value={[leadDetails.city, leadDetails.stateProvince, leadDetails.country].filter(Boolean).join(", ")} />
               </dl>
               {leadDetails.companyAccount && <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-500">Company account: {leadDetails.companyAccount.name} · {[leadDetails.companyAccount.city, leadDetails.companyAccount.state, leadDetails.companyAccount.country].filter(Boolean).join(", ") || "Location not set"}</p>}
+              {scheduledVisits.length > 0 && <div className="mt-3 border-t border-slate-100 pt-3">
+                <h3 className="mb-2 text-[11px] font-semibold text-slate-800">Scheduled Site Visits</h3>
+                <div className="space-y-2">
+                  {scheduledVisits.map((visit) => <div key={visit.id} className="rounded-md border border-amber-200 bg-amber-50/70 p-3 text-[11px] text-amber-950">
+                    <p className="font-semibold">{visit.project?.name || meta?.projects.find((project) => project.id === visit.projectId)?.name || "Project not specified"} · {new Date(visit.scheduledAt).toLocaleString()}</p>
+                    <p className="mt-1">Visit #{visit.siteVisitNumber}{visit.visitType ? ` · ${visit.visitType}` : ""}{visit.visitorCount ? ` · ${visit.visitorCount} visitor${visit.visitorCount === 1 ? "" : "s"}` : ""}</p>
+                    {visit.assignee && <p className="mt-1">Assigned to: {[visit.assignee.firstName, visit.assignee.lastName].filter(Boolean).join(" ")}</p>}
+                    {visit.transportRequired != null && <p className="mt-1">Transport: {visit.transportRequired ? "Required" : "Not required"}</p>}
+                    {visit.notes && <p className="mt-1 whitespace-pre-wrap">Notes: {visit.notes}</p>}
+                  </div>)}
+                </div>
+              </div>}
               <p className="mt-2 text-[10px] leading-relaxed text-slate-500">Matched by phone. Saved Lead details will remain unchanged. If this project has a scheduled Site Visit, it will be completed in place; otherwise, a visit will be added.</p>
             </section>}
             {errorMessage && <div className="mb-4"><ErrorNotice message={errorMessage} /></div>}
@@ -794,7 +835,15 @@ export function GreRegistrationPage() {
                 <SectionTitle title="Property Requirement & Site Visit" description="Choose a project and enter the completed visit details." icon={Home} />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Project" required><select required value={draft.siteVisit.projectId} onChange={(event) => updateSiteVisit("projectId", event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="">Select a project</option>{meta?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
-                  {scheduledVisitForSelectedProject && <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900 sm:col-span-2">Scheduled Site Visit found for {new Date(scheduledVisitForSelectedProject.scheduledAt).toLocaleString()}. Submitting this GRE will mark that scheduled visit as completed instead of creating a duplicate.</p>}
+                  {scheduledVisitForSelectedProject && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950 sm:col-span-2">
+                    <p className="font-semibold">Scheduled Site Visit #{scheduledVisitForSelectedProject.siteVisitNumber}</p>
+                    <p className="mt-1">Scheduled for {new Date(scheduledVisitForSelectedProject.scheduledAt).toLocaleString()}{scheduledVisitForSelectedProject.visitType ? ` · ${scheduledVisitForSelectedProject.visitType}` : ""}</p>
+                    {scheduledVisitForSelectedProject.assignee && <p className="mt-1">Assigned to: {[scheduledVisitForSelectedProject.assignee.firstName, scheduledVisitForSelectedProject.assignee.lastName].filter(Boolean).join(" ")}</p>}
+                    {scheduledVisitForSelectedProject.visitorCount && <p className="mt-1">Visitors: {scheduledVisitForSelectedProject.visitorCount}</p>}
+                    {scheduledVisitForSelectedProject.transportRequired != null && <p className="mt-1">Transport: {scheduledVisitForSelectedProject.transportRequired ? "Required" : "Not required"}</p>}
+                    {scheduledVisitForSelectedProject.notes && <p className="mt-1 whitespace-pre-wrap">Notes: {scheduledVisitForSelectedProject.notes}</p>}
+                    <p className="mt-2">Submitting this GRE will mark that scheduled visit as completed instead of creating a duplicate.</p>
+                  </div>}
                   {leadExists && leadDetails?.siteVisits?.some((visit) => visit.projectId === draft.siteVisit.projectId) && <p className="text-xs font-medium text-blue-700 sm:col-span-2">Revisit — this Lead has visited this project before.</p>}
                   <Field label="Visit date" required><Input type="date" required max={new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)} value={draft.siteVisit.date} onChange={(event) => updateSiteVisit("date", event.target.value)} /></Field>
                   <Field label="Visit time" required><Input type="time" required value={draft.siteVisit.time} onChange={(event) => updateSiteVisit("time", event.target.value)} /></Field>

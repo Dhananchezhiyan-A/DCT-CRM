@@ -13,9 +13,13 @@ import {
 } from '../services/recordAccess';
 import { getNextSiteVisitNumber, normalizeOverdueSiteVisits } from '../services/leadWorkflowExtras';
 import { canTransitionStatus } from '../services/workflow';
-import { createOwnerHistory } from '../services/ownerHistory';
 import { checkSiteVisitLocation } from '../services/siteVisitLocation';
-import { findApplicableRRQueue, RoundRobinAssignmentService } from '../services/rrQueue';
+import {
+  assignCompletedSiteVisitToSalesInTransaction,
+  assignSiteVisitToSVCInTransaction,
+  findApplicableRRQueue,
+  RoundRobinAssignmentService,
+} from '../services/rrQueue';
 
 const router = Router();
 
@@ -34,13 +38,20 @@ const siteVisitSchema = z.object({
 });
 
 const updateSiteVisitSchema = siteVisitSchema.partial();
+const siteVisitLocationSchema = z.object({
+  latitude: z.number().finite().min(-90).max(90),
+  longitude: z.number().finite().min(-180).max(180),
+  accuracy: z.number().finite().positive(),
+  timestamp: z.number().finite().positive(),
+});
+
 const completeSiteVisitSchema = z.object({
   completedAt: z.string().datetime('Completion time is required'),
   customerFeedback: z.string().min(1, 'Customer feedback is required').refine((v) => v.trim().length > 0, 'Customer feedback is required'),
   completionNotes: z.string().min(1, 'Completion notes are required').refine((v) => v.trim().length > 0, 'Completion notes are required'),
-  latitude: z.number().min(-90).max(90),
-  longitude: z.number().min(-180).max(180),
-});
+}).merge(siteVisitLocationSchema);
+
+class SiteVisitCompletionConflict extends Error {}
 
 const cancelSiteVisitSchema = z.object({
   reason: z.string().min(1, 'Reason is required').refine((v) => v.trim().length > 0, {
@@ -113,7 +124,7 @@ router.get('/', authorize('SiteVisit', 'read'), async (req: AuthRequest, res: Re
         orderBy: { [sortBy as string]: sortOrder },
         include: {
           lead: { select: { id: true, leadNumber: true, firstName: true, lastName: true, phone: true, company: true, email: true } },
-          project: { select: { id: true, name: true } },
+          project: { select: { id: true, name: true, allowedRadiusMeters: true } },
           assignee: { select: { id: true, firstName: true, lastName: true } },
           creator: { select: { id: true, firstName: true, lastName: true, email: true, profile: { select: { name: true } } } },
           completedBy: { select: { id: true, firstName: true, lastName: true, email: true, profile: { select: { name: true } } } },
@@ -148,7 +159,7 @@ router.get('/:id', authorize('SiteVisit', 'read'), async (req: AuthRequest, res:
       where: { id: req.params.id, tenantId },
       include: {
         lead: { select: { id: true, leadNumber: true, firstName: true, lastName: true, phone: true, company: true, email: true, status: true, owner: { select: { id: true, firstName: true, lastName: true, email: true, profile: { select: { name: true } } } } } },
-        project: { select: { id: true, name: true } },
+        project: { select: { id: true, name: true, allowedRadiusMeters: true } },
         assignee: { select: { id: true, firstName: true, lastName: true, email: true } },
         creator: { select: { id: true, firstName: true, lastName: true, email: true, profile: { select: { name: true } } } },
         completedBy: { select: { id: true, firstName: true, lastName: true, email: true, profile: { select: { name: true } } } },
@@ -181,7 +192,16 @@ router.post('/', authorize('SiteVisit', 'create'), async (req: AuthRequest, res:
 
     const lead = await prisma.lead.findFirst({
       where: { id: data.leadId, tenantId },
-      select: { id: true, tenantId: true, ownerId: true, creatorId: true, status: true },
+      select: {
+        id: true,
+        tenantId: true,
+        ownerId: true,
+        creatorId: true,
+        status: true,
+        source: true,
+        leadSubSource: true,
+        rating: true,
+      },
     });
     if (!lead) {
       return res.status(404).json({ success: false, error: 'Lead not found' });
@@ -195,15 +215,19 @@ router.post('/', authorize('SiteVisit', 'create'), async (req: AuthRequest, res:
       return res.status(400).json({ success: false, error: 'Use the completion action to complete a site visit.' });
     }
     const result = await prisma.$transaction(async (tx) => {
+      const project = await tx.project.findFirst({
+        where: { id: data.projectId, tenantId, isActive: true },
+        select: { id: true },
+      });
+      if (!project) throw new Error('PROJECT_NOT_AVAILABLE');
+
       const siteVisitNumber = await getNextSiteVisitNumber(tx, tenantId);
       const siteVisit = await tx.siteVisit.create({
         data: {
           tenantId,
           leadId: data.leadId,
           projectId: data.projectId,
-          assigneeId: data.assigneeId,
           creatorId: userId,
-          queueId: data.queueId,
           siteVisitNumber,
           scheduledAt: new Date(data.scheduledAt),
           status: siteVisitStatus,
@@ -211,11 +235,16 @@ router.post('/', authorize('SiteVisit', 'create'), async (req: AuthRequest, res:
           feedback: data.feedback,
           rating: data.rating,
         },
-        include: {
-          lead: { select: { id: true, firstName: true, lastName: true } },
-          project: { select: { id: true, name: true } },
-        },
+        select: { id: true },
       });
+      if (siteVisitStatus === 'SCHEDULED') {
+        await assignSiteVisitToSVCInTransaction(tx, {
+          siteVisitId: siteVisit.id,
+          tenantId,
+          actorId: userId,
+          requestedAssigneeId: data.assigneeId,
+        });
+      }
 
       const profileName = req.user!.profileName || 'Admin';
       if (
@@ -251,13 +280,26 @@ router.post('/', authorize('SiteVisit', 'create'), async (req: AuthRequest, res:
           newValues: { leadId: data.leadId, scheduledAt: data.scheduledAt, siteVisitNumber },
         },
       });
-      return siteVisit;
+      return tx.siteVisit.findUniqueOrThrow({
+        where: { id: siteVisit.id },
+        include: {
+          lead: { select: { id: true, firstName: true, lastName: true } },
+          project: { select: { id: true, name: true } },
+          assignee: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
     });
 
     res.status(201).json({ success: true, data: result });
   } catch (error: any) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: error.errors[0].message });
+    }
+    if (error instanceof Error && error.message === 'PROJECT_NOT_AVAILABLE') {
+      return res.status(404).json({ success: false, error: 'Project not found' });
+    }
+    if (error instanceof Error && ['SVC_QUEUE_NOT_CONFIGURED', 'NO_ELIGIBLE_SVC_MEMBER', 'SVC_ASSIGNEE_NOT_ELIGIBLE'].includes(error.message)) {
+      return res.status(409).json({ success: false, error: 'No eligible SVC owner is configured for this project.' });
     }
     console.error('Create site visit error:', error);
     res.status(500).json({ success: false, error: 'Failed to create site visit' });
@@ -270,6 +312,9 @@ router.put('/:id', authorize('SiteVisit', 'edit'), async (req: AuthRequest, res:
 
     const existing = await prisma.siteVisit.findFirst({
       where: { id: req.params.id, tenantId },
+      include: {
+        lead: { select: { id: true, status: true, source: true, leadSubSource: true, rating: true } },
+      },
     });
 
     if (!existing) {
@@ -287,12 +332,45 @@ router.put('/:id', authorize('SiteVisit', 'edit'), async (req: AuthRequest, res:
       return res.status(400).json({ success: false, error: 'Use the completion action to complete a site visit.' });
     }
 
-    const updateData: any = { ...data };
+    const updateData: Record<string, unknown> = { ...data };
     if (data.scheduledAt) updateData.scheduledAt = new Date(data.scheduledAt);
 
-    const siteVisit = await prisma.siteVisit.update({
-      where: { id: req.params.id },
-      data: updateData,
+    const projectChanged = !!data.projectId && data.projectId !== existing.projectId;
+    if (projectChanged) {
+      delete updateData.assigneeId;
+      delete updateData.queueId;
+      updateData.queueId = null;
+    }
+
+    const siteVisit = await prisma.$transaction(async (tx) => {
+      const updated = await tx.siteVisit.update({
+        where: { id: req.params.id },
+        data: updateData,
+      });
+
+      if (projectChanged && data.projectId) {
+        const project = await tx.project.findFirst({
+          where: { id: data.projectId, tenantId, isActive: true },
+          select: { id: true },
+        });
+        if (!project) throw new Error('PROJECT_NOT_AVAILABLE');
+      }
+      if (existing.status === 'SCHEDULED' && (projectChanged || data.assigneeId)) {
+        await assignSiteVisitToSVCInTransaction(tx, {
+          siteVisitId: updated.id,
+          tenantId,
+          actorId: userId,
+          requestedAssigneeId: data.assigneeId,
+        });
+      }
+
+      return tx.siteVisit.findUniqueOrThrow({
+        where: { id: req.params.id },
+        include: {
+          project: { select: { id: true, name: true } },
+          assignee: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
     });
 
     await auditLog(tenantId, userId, 'UPDATE', 'SiteVisit', siteVisit.id, existing, siteVisit);
@@ -302,8 +380,80 @@ router.put('/:id', authorize('SiteVisit', 'edit'), async (req: AuthRequest, res:
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: error.errors[0].message });
     }
+    if (error instanceof Error && error.message === 'PROJECT_NOT_AVAILABLE') {
+      return res.status(404).json({ success: false, error: 'Project not found' });
+    }
+    if (error instanceof Error && ['SVC_QUEUE_NOT_CONFIGURED', 'NO_ELIGIBLE_SVC_MEMBER', 'SVC_ASSIGNEE_NOT_ELIGIBLE'].includes(error.message)) {
+      return res.status(409).json({ success: false, error: 'No eligible SVC owner is configured for this project.' });
+    }
     console.error('Update site visit error:', error);
     res.status(500).json({ success: false, error: 'Failed to update site visit' });
+  }
+});
+
+router.post('/:id/verify-location', authorize('SiteVisit', 'edit'), async (req: AuthRequest, res: Response) => {
+  try {
+    const { tenantId } = req.user!;
+    const parsed = siteVisitLocationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error.errors[0]?.message || 'Valid GPS coordinates are required' });
+    }
+    const { latitude, longitude, accuracy, timestamp } = parsed.data;
+    if (timestamp > Date.now() + 5_000 || Date.now() - timestamp > 60_000) {
+      return res.status(400).json({ success: false, code: 'STALE_LOCATION', error: 'Your location reading is no longer fresh. Try again.' });
+    }
+
+    const existing = await prisma.siteVisit.findFirst({
+      where: { id: req.params.id, tenantId },
+      include: {
+        project: { select: { name: true, latitude: true, longitude: true, allowedRadiusMeters: true } },
+      },
+    });
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Site visit not found' });
+    }
+    if (!(await canAccessSiteVisit(req.user!, existing))) {
+      return res.status(403).json({ success: false, error: 'You do not have access to this site visit' });
+    }
+    if (existing.status !== 'SCHEDULED') {
+      return res.status(400).json({ success: false, error: 'Only scheduled site visits can be verified' });
+    }
+
+    const locationCheck = checkSiteVisitLocation(
+      existing.project?.name,
+      existing.project?.latitude == null ? null : Number(existing.project.latitude),
+      existing.project?.longitude == null ? null : Number(existing.project.longitude),
+      existing.project?.allowedRadiusMeters,
+      latitude,
+      longitude,
+      accuracy,
+    );
+    if (!locationCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        code: locationCheck.code,
+        error: locationCheck.error,
+        data: {
+          projectName: existing.project?.name || 'Project',
+          distanceMeters: locationCheck.distanceMeters,
+          radiusMeters: locationCheck.radiusMeters,
+          accuracyMeters: accuracy,
+        },
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        projectName: existing.project?.name || 'Project',
+        distanceMeters: locationCheck.distanceMeters,
+        radiusMeters: locationCheck.radiusMeters,
+        accuracyMeters: accuracy,
+      },
+    });
+  } catch (error) {
+    console.error('Verify site visit location error:', error);
+    res.status(500).json({ success: false, error: 'Failed to verify site visit location' });
   }
 });
 
@@ -314,7 +464,10 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
     if (!parsed.success) {
       return res.status(400).json({ success: false, error: parsed.error.errors[0]?.message || 'Completion details are required' });
     }
-    const { completedAt, customerFeedback, completionNotes, latitude, longitude } = parsed.data;
+    const { completedAt, customerFeedback, completionNotes, latitude, longitude, accuracy, timestamp } = parsed.data;
+    if (timestamp > Date.now() + 5_000 || Date.now() - timestamp > 60_000) {
+      return res.status(400).json({ success: false, code: 'STALE_LOCATION', error: 'Your location reading is no longer fresh. Try again.' });
+    }
 
     const existing = await prisma.siteVisit.findFirst({
       where: { id: req.params.id, tenantId },
@@ -323,14 +476,13 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
           select: {
             id: true,
             status: true,
-            ownerId: true,
             source: true,
             leadSubSource: true,
             rating: true,
             owner: { select: { profile: { select: { name: true } } } },
           },
         },
-        project: { select: { name: true, latitude: true, longitude: true } },
+        project: { select: { name: true, latitude: true, longitude: true, allowedRadiusMeters: true } },
       },
     });
 
@@ -345,16 +497,31 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
     if (existing.status !== 'SCHEDULED') {
       return res.status(400).json({ success: false, error: 'Only scheduled site visits can be completed' });
     }
+    if (req.user!.profileName !== 'GRE') {
+      return res.status(403).json({ success: false, error: 'Only GRE users can confirm that a site visit happened' });
+    }
 
     const locationCheck = checkSiteVisitLocation(
       existing.project?.name,
-      existing.project?.latitude,
-      existing.project?.longitude,
+      existing.project?.latitude == null ? null : Number(existing.project.latitude),
+      existing.project?.longitude == null ? null : Number(existing.project.longitude),
+      existing.project?.allowedRadiusMeters,
       latitude,
       longitude,
+      accuracy,
     );
     if (!locationCheck.allowed) {
-      return res.status(400).json({ success: false, error: locationCheck.error });
+      return res.status(400).json({
+        success: false,
+        code: locationCheck.code,
+        error: locationCheck.error,
+        data: {
+          projectName: existing.project?.name || 'Project',
+          distanceMeters: locationCheck.distanceMeters,
+          radiusMeters: locationCheck.radiusMeters,
+          accuracyMeters: accuracy,
+        },
+      });
     }
 
     const profileName = req.user!.profileName || 'Admin';
@@ -376,8 +543,8 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
     const completedByName = `${completedBy.firstName} ${completedBy.lastName}`.trim();
 
     const result = await prisma.$transaction(async (tx) => {
-      const siteVisit = await tx.siteVisit.update({
-        where: { id: req.params.id },
+      const updateResult = await tx.siteVisit.updateMany({
+        where: { id: req.params.id, tenantId, status: 'SCHEDULED' },
         data: {
           status: 'COMPLETED',
           completedAt: new Date(completedAt),
@@ -385,12 +552,29 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
           customerFeedback: customerFeedback.trim(),
           completionNotes: completionNotes.trim(),
           feedback: customerFeedback.trim(),
-        },
-        include: {
-          completedBy: { select: { id: true, firstName: true, lastName: true } },
-          project: { select: { id: true, name: true } },
+          salespersonLatitude: latitude,
+          salespersonLongitude: longitude,
+          gpsAccuracyMeters: accuracy,
+          gpsTimestamp: new Date(timestamp),
+          projectLatitudeAtCompletion: existing.project?.latitude == null ? null : Number(existing.project.latitude),
+          projectLongitudeAtCompletion: existing.project?.longitude == null ? null : Number(existing.project.longitude),
+          distanceFromProjectMeters: locationCheck.distanceMeters,
+          locationVerified: true,
+          locationVerifiedAt: new Date(),
         },
       });
+      if (updateResult.count !== 1) {
+        throw new SiteVisitCompletionConflict('This Site Visit has already been completed or changed. Refresh and try again.');
+      }
+
+      const siteVisit = await tx.siteVisit.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: {
+          completedBy: { select: { id: true, firstName: true, lastName: true } },
+          project: { select: { id: true, name: true, latitude: true, longitude: true, allowedRadiusMeters: true } },
+        },
+      });
+      if (!siteVisit) throw new Error('Completed Site Visit could not be loaded.');
 
       let leadStatus = existing.lead?.status || null;
       if (existing.lead && existing.lead.status === 'SITE_VISIT_SCHEDULED') {
@@ -401,41 +585,6 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
         });
         leadStatus = lead.status;
 
-        if (existing.lead.owner?.profile?.name === 'SVC') {
-          const rrQueue = await findApplicableRRQueue(tenantId, {
-            projectId: existing.projectId,
-            status: lead.status,
-            source: existing.lead.source,
-            secondarySource: existing.lead.leadSubSource,
-            priority: existing.lead.rating,
-          }, tx);
-          if (!rrQueue) {
-            throw new Error('PROJECT_RR_QUEUE_NOT_FOUND');
-          }
-          const assignment = await RoundRobinAssignmentService.assignLeadInTransaction(
-            tx,
-            rrQueue.id,
-            existing.leadId,
-            tenantId,
-          );
-          const newOwner = await tx.user.findFirst({
-            where: { id: assignment.assignedUserId, tenantId },
-            select: { profile: { select: { name: true } } },
-          });
-          await createOwnerHistory({
-            tenantId,
-            leadId: existing.leadId,
-            previousOwnerId: existing.lead.ownerId,
-            newOwnerId: assignment.assignedUserId,
-            previousProfile: 'SVC',
-            newProfile: newOwner?.profile?.name || null,
-            previousStatus: existing.lead.status,
-            newStatus: lead.status,
-            handoffReason: `Site Visit completed for project ${existing.projectId}`,
-            changedById: userId,
-          }, tx);
-        }
-
         await tx.auditLog.create({
           data: {
             tenantId,
@@ -445,7 +594,23 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
             objectType: 'Lead',
             objectId: existing.leadId,
             oldValues: { status: 'SITE_VISIT_SCHEDULED' },
-            newValues: { status: 'SITE_VISIT_HAPPENED', siteVisitId: existing.id, completedAt, completedById: userId, completedByName, customerFeedback, completionNotes },
+            newValues: {
+              status: 'SITE_VISIT_HAPPENED',
+              siteVisitId: existing.id,
+              completedAt,
+              completedById: userId,
+              completedByName,
+              customerFeedback,
+              completionNotes,
+              salespersonLatitude: latitude,
+              salespersonLongitude: longitude,
+              gpsAccuracyMeters: accuracy,
+              gpsTimestamp: new Date(timestamp).toISOString(),
+              projectLatitude: existing.project?.latitude,
+              projectLongitude: existing.project?.longitude,
+              distanceFromProjectMeters: locationCheck.distanceMeters,
+              locationVerified: true,
+            },
           },
         });
       }
@@ -459,20 +624,72 @@ router.patch('/:id/complete', authorize('SiteVisit', 'edit'), async (req: AuthRe
           objectType: 'SiteVisit',
           objectId: siteVisit.id,
           oldValues: { status: 'SCHEDULED' },
-          newValues: { status: 'COMPLETED', completedAt, completedById: userId, completedByName, customerFeedback, completionNotes },
+          newValues: {
+            status: 'COMPLETED',
+            completedAt,
+            completedById: userId,
+            completedByName,
+            customerFeedback,
+            completionNotes,
+            salespersonLatitude: latitude,
+            salespersonLongitude: longitude,
+            gpsAccuracyMeters: accuracy,
+            gpsTimestamp: new Date(timestamp).toISOString(),
+            projectLatitude: existing.project?.latitude,
+            projectLongitude: existing.project?.longitude,
+            distanceFromProjectMeters: locationCheck.distanceMeters,
+            locationVerified: true,
+          },
         },
       });
 
-      return { siteVisit, leadStatus };
+      const salesHandoff = await assignCompletedSiteVisitToSalesInTransaction(tx, siteVisit.id, tenantId);
+      const updatedSiteVisit = await tx.siteVisit.findUniqueOrThrow({
+        where: { id: siteVisit.id },
+        include: {
+          assignee: { select: { id: true, firstName: true, lastName: true } },
+          project: { select: { id: true, name: true } },
+          completedBy: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
+      const updatedLead = await tx.lead.findUniqueOrThrow({
+        where: { id: existing.leadId },
+        include: { owner: { select: { id: true, firstName: true, lastName: true } } },
+      });
+      return { siteVisit: updatedSiteVisit, lead: updatedLead, leadStatus, salesHandoff };
     });
 
     res.json({ success: true, data: result });
   } catch (error) {
-    if (error instanceof Error && error.message === 'PROJECT_RR_QUEUE_NOT_FOUND') {
-      return res.status(409).json({ success: false, error: 'No Round Robin queue is configured for this project and lead source. The Site Visit remains scheduled.' });
+    if (error instanceof SiteVisitCompletionConflict) {
+      return res.status(409).json({ success: false, error: error.message });
     }
     console.error('Complete site visit error:', error);
     res.status(500).json({ success: false, error: 'Failed to complete site visit' });
+  }
+});
+
+router.post('/:id/retry-sales-assignment', authorize('SiteVisit', 'edit'), async (req: AuthRequest, res: Response) => {
+  if (!req.user!.isAdmin && !req.user!.isSuperAdmin && req.user!.profileName !== 'CRM Admin') {
+    return res.status(403).json({ success: false, error: 'Admin access required' });
+  }
+  try {
+    const result = await prisma.$transaction((tx) =>
+      assignCompletedSiteVisitToSalesInTransaction(tx, req.params.id, req.tenantId!),
+    );
+    if (result.pendingReason) {
+      return res.status(409).json({ success: false, error: result.pendingReason, data: result });
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'SITE_VISIT_NOT_FOUND') {
+      return res.status(404).json({ success: false, error: 'Site visit not found' });
+    }
+    if (error instanceof Error && error.message === 'SITE_VISIT_NOT_GRE_COMPLETED') {
+      return res.status(409).json({ success: false, error: 'Only a completed GRE visit can be assigned to Sales' });
+    }
+    console.error('Retry Sales assignment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to retry Sales assignment' });
   }
 });
 
@@ -534,7 +751,6 @@ router.patch('/:id/cancel', authorize('SiteVisit', 'edit'), async (req: AuthRequ
             where: { id: existing.leadId },
             data: { status: 'PROSPECT' },
           });
-
           await tx.auditLog.create({
             data: {
               tenantId,
@@ -669,6 +885,7 @@ router.post('/:id/revisit', authorize('SiteVisit', 'create'), async (req: AuthRe
             siteVisit.id,
             existing.leadId,
             tenantId,
+            userId,
           );
         } catch (error) {
           if (error instanceof Error && error.message === 'NO_ELIGIBLE_USER') {

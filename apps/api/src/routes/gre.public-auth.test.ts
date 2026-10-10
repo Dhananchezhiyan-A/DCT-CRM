@@ -35,18 +35,6 @@ vi.mock('../services/leadWorkflowExtras', () => ({
   getNextSiteVisitNumber: vi.fn(),
 }));
 
-vi.mock('../services/ownerHistory', () => ({
-  createOwnerHistory: vi.fn(),
-}));
-
-vi.mock('../services/rrQueue', () => ({
-  findApplicableRRQueue: vi.fn(),
-  getReusableSiteVisitOwner: vi.fn(),
-  isNewProjectSiteVisit: vi.fn(),
-  isSiteVisitRevisit: vi.fn(),
-  RoundRobinAssignmentService: vi.fn(),
-}));
-
 import { greRoutes } from './gre';
 
 const servers: Server[] = [];

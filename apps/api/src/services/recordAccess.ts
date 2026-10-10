@@ -86,7 +86,7 @@ export function leadScopeClause(scope: RecordScope): Record<string, unknown> | n
   return {
     OR: [
       // Record access = current lead OWNER. A creator does NOT retain access
-      // after a handoff or admin owner change reassigns the lead
+      // after Round Robin / handoff / admin owner change reassigns the lead
       // (owner change must remove it from the previous owner's list server-side).
       { ownerId: scope.userId },
       activeSiteVisitShare(scope.userId),

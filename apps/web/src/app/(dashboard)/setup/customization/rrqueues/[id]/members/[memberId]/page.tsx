@@ -8,9 +8,18 @@ import { rrQueueApi, userApi } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 
 type Tab = "related" | "details";
+const MEMBER_USER_TYPES = ["Pre Sales", "Sales", "Post Sales", "Recovery", "Channel Partner", "SVC", "CRM"] as const;
+const MEMBER_PROFILE_NAMES: Record<(typeof MEMBER_USER_TYPES)[number], string[]> = {
+  "Pre Sales": ["pre sales", "presales"],
+  Sales: ["sales", "sales executive"],
+  "Post Sales": ["post sales", "post-sales"],
+  Recovery: ["recovery"],
+  "Channel Partner": ["channel partner"],
+  SVC: ["svc"],
+  CRM: ["crm"],
+};
 
 function displayDate(value?: string) {
   return value ? new Date(value).toLocaleString() : "-";
@@ -23,7 +32,10 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
   const [tab, setTab] = React.useState<Tab>("details");
   const [editing, setEditing] = React.useState(false);
   const [draftUserId, setDraftUserId] = React.useState("");
-  const [draftUserIdNumber, setDraftUserIdNumber] = React.useState("");
+  const [draftUserType, setDraftUserType] = React.useState<(typeof MEMBER_USER_TYPES)[number]>("Sales");
+  const [draftActiveMember, setDraftActiveMember] = React.useState(true);
+  const [draftAvailable, setDraftAvailable] = React.useState(true);
+  const [draftWorking, setDraftWorking] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
 
   React.useEffect(() => {
@@ -39,14 +51,30 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
       }));
   }, [params.id, params.memberId, toast]);
 
+  const matchesSelectedType = (userId: string, userType: (typeof MEMBER_USER_TYPES)[number]) => {
+    const user = users.find((candidate) => candidate.id === userId && candidate.isActive);
+    if (!user) return false;
+    return MEMBER_PROFILE_NAMES[userType].includes(user.profile?.name?.toLowerCase());
+  };
+  const canSaveSelection = !!draftUserId && (draftUserId === member?.user?.id || matchesSelectedType(draftUserId, draftUserType));
+
   const saveChanges = async () => {
-    const data: { userId?: string; userIdNumber?: string | null } = {};
-    if (draftUserId !== member.user.id) data.userId = draftUserId;
-    if ((draftUserIdNumber || "") !== (member.userIdNumber || "")) data.userIdNumber = draftUserIdNumber || null;
-    if (!Object.keys(data).length) {
-      setEditing(false);
-      return;
-    }
+    const data: {
+      userId?: string;
+      userType?: (typeof MEMBER_USER_TYPES)[number];
+      activeMember?: boolean;
+      isAvailable?: boolean;
+      isWorking?: boolean;
+    } = {};
+      if (draftUserId !== member.user.id) data.userId = draftUserId;
+      if (draftUserType !== member.userType) data.userType = draftUserType;
+      if (draftActiveMember !== member.activeMember) data.activeMember = draftActiveMember;
+      if (draftAvailable !== member.isAvailable) data.isAvailable = draftAvailable;
+      if (draftWorking !== member.isWorking) data.isWorking = draftWorking;
+      if (!Object.keys(data).length) {
+        setEditing(false);
+        return;
+      }
     try {
       setSaving(true);
       await rrQueueApi.updateMember(params.id, params.memberId, data);
@@ -71,12 +99,18 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
   const memberName = member.name || userName;
   const startEditing = () => {
     setDraftUserId(member.user.id);
-    setDraftUserIdNumber(member.userIdNumber || "");
+    setDraftUserType(member.userType);
+    setDraftActiveMember(Boolean(member.activeMember));
+    setDraftAvailable(Boolean(member.isAvailable));
+    setDraftWorking(Boolean(member.isWorking));
     setEditing(true);
   };
   const cancelEditing = () => {
     setDraftUserId(member.user.id);
-    setDraftUserIdNumber(member.userIdNumber || "");
+    setDraftUserType(member.userType);
+    setDraftActiveMember(Boolean(member.activeMember));
+    setDraftAvailable(Boolean(member.isAvailable));
+    setDraftWorking(Boolean(member.isWorking));
     setEditing(false);
   };
 
@@ -84,12 +118,12 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-4">
-          <Link href={`/setup/customization/rrqueues/${params.id}`} aria-label="Back to RRQueue" className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-5 w-5" /></Link>
+          <Link href={`/setup/customization/rrqueues/${params.id}`} aria-label="Back to queue" className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-5 w-5" /></Link>
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-sky-500 text-white">
           <Users className="h-6 w-6" />
         </div>
         <div>
-          <p className="text-sm text-muted-foreground">RRMember</p>
+          <p className="text-sm text-muted-foreground">Queue Member</p>
           <h1 className="text-3xl font-semibold">{memberName}</h1>
         </div>
         </div>
@@ -108,31 +142,46 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
             <CardContent className="grid gap-x-12 gap-y-0 px-0 md:grid-cols-2">
               <div>
                 <DetailRow label="Name">{memberName}</DetailRow>
-                <DetailRow label="RRQueue"><Link className="text-primary underline decoration-dotted underline-offset-4" href={`/setup/customization/rrqueues/${params.id}`}>{member.rrQueue.name}</Link></DetailRow>
+                <DetailRow label="Round Robin Queue"><Link className="text-primary underline decoration-dotted underline-offset-4" href={`/setup/customization/rrqueues/${params.id}`}>{member.rrQueue.name}</Link></DetailRow>
                 <DetailRow
                   label={<span>User <span className="text-destructive">*</span></span>}
                   editing={editing}
-                  editor={<select id="rrmember-edit-user" aria-label="User" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={draftUserId} onChange={(event) => setDraftUserId(event.target.value)}>{users.filter((user) => user.isActive).map((user) => <option key={user.id} value={user.id}>{user.firstName} {user.lastName} ({user.email})</option>)}</select>}
+                  editor={<select id="rrmember-edit-user" aria-label="User" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={draftUserId} onChange={(event) => setDraftUserId(event.target.value)}><option value="">Select user</option>{users.filter((user) => user.isActive && MEMBER_PROFILE_NAMES[draftUserType].includes(user.profile?.name?.toLowerCase())).map((user) => <option key={user.id} value={user.id}>{user.firstName} {user.lastName} ({user.email})</option>)}</select>}
                 >
                   <div>{userName}<span className="ml-2 text-muted-foreground">{member.user.email}</span></div>
                 </DetailRow>
                 <DetailRow label="Created">{displayDate(member.createdAt)}</DetailRow>
+                <DetailRow label="User Type" editing={editing} editor={<select id="rrmember-edit-user-type" aria-label="User Type" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={draftUserType} onChange={(event) => { const value = event.target.value as (typeof MEMBER_USER_TYPES)[number]; setDraftUserType(value); const nextUser = users.find((user) => user.id === draftUserId && user.isActive && MEMBER_PROFILE_NAMES[value].includes(user.profile?.name?.toLowerCase())); if (!nextUser && draftUserId !== member.user.id) setDraftUserId(""); }}>{MEMBER_USER_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>}>{member.userType}</DetailRow>
               </div>
               <div>
-                <DetailRow
-                  label="user id"
-                  editing={editing}
-                  editor={<Input id="rrmember-edit-user-id" aria-label="user id" type="number" min="0" step="1" value={draftUserIdNumber} onChange={(event) => setDraftUserIdNumber(event.target.value)} />}
-                >
-                  <span className="break-all font-mono text-xs">{member.userIdNumber ?? "-"}</span>
-                </DetailRow>
                 <DetailRow label="No of New Leads">{member.noOfNewLeads}</DetailRow>
                 <DetailRow label="Leads Owned">{member.leadsOwned}</DetailRow>
+                <DetailRow label="Last Assigned">{displayDate(member.lastAssignedAt)}</DetailRow>
                 <DetailRow label="Last Modified">{displayDate(member.updatedAt)}</DetailRow>
-                <DetailRow label="Active"><Badge variant={member.active ? "default" : "secondary"}>{member.active ? "Active" : "Inactive"}</Badge></DetailRow>
+                <DetailRow
+                  label="Active Member"
+                  editing={editing}
+                  editor={<input aria-label="Active Member" type="checkbox" checked={draftActiveMember} onChange={(event) => setDraftActiveMember(event.target.checked)} className="h-4 w-4" />}
+                >
+                  <Badge variant={member.activeMember ? "default" : "secondary"}>{member.activeMember ? "Active" : "Inactive"}</Badge>
+                </DetailRow>
+                <DetailRow
+                  label="Available"
+                  editing={editing}
+                  editor={<input aria-label="Available" type="checkbox" checked={draftAvailable} onChange={(event) => setDraftAvailable(event.target.checked)} className="h-4 w-4" />}
+                >
+                  <Badge variant={member.isAvailable ? "default" : "secondary"}>{member.isAvailable ? "Yes" : "No"}</Badge>
+                </DetailRow>
+                <DetailRow
+                  label="Working"
+                  editing={editing}
+                  editor={<input aria-label="Working" type="checkbox" checked={draftWorking} onChange={(event) => setDraftWorking(event.target.checked)} className="h-4 w-4" />}
+                >
+                  <Badge variant={member.isWorking ? "default" : "secondary"}>{member.isWorking ? "Yes" : "No"}</Badge>
+                </DetailRow>
               </div>
             </CardContent>
-            {editing && <div className="sticky bottom-0 flex justify-center gap-3 border-t bg-card px-6 py-4 shadow-[0_-4px_8px_rgba(0,0,0,0.12)]"><Button variant="outline" onClick={cancelEditing} disabled={saving}>Cancel</Button><Button onClick={() => void saveChanges()} disabled={saving || !draftUserId}>{saving ? "Saving..." : "Save"}</Button></div>}
+            {editing && <div className="sticky bottom-0 flex justify-center gap-3 border-t bg-card px-6 py-4 shadow-[0_-4px_8px_rgba(0,0,0,0.12)]"><Button variant="outline" onClick={cancelEditing} disabled={saving}>Cancel</Button><Button onClick={() => void saveChanges()} disabled={saving || !canSaveSelection}>{saving ? "Saving..." : "Save"}</Button></div>}
           </Card>
         )}
       </section>

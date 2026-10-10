@@ -49,11 +49,6 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
   const isCustomizeHomeRoute =
     pathname === "/admin/customize-home" ||
     pathname.startsWith("/admin/customize-home/");
-  const isObjectManagerRoute =
-    pathname === "/admin/object-manager" ||
-    pathname.startsWith("/admin/object-manager/");
-  const canManageObjects =
-    isSuperAdmin || (isAdmin && (hasFullAccess || hasEffectivePermission("PROFILE_PERMISSION_MANAGE")));
 
   React.useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -64,19 +59,16 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
       router.replace("/home");
     } else if (!isLoading && isCustomizeHomeRoute && !isAdmin && !isSuperAdmin) {
       router.replace("/home");
-    } else if (!isLoading && isObjectManagerRoute && !canManageObjects) {
-      router.replace("/home");
-    } else if (!isLoading && pathname.startsWith("/admin") && !isCustomizeHomeRoute && !isObjectManagerRoute && !isSuperAdmin) {
+    } else if (!isLoading && pathname.startsWith("/admin") && !isCustomizeHomeRoute && !isSuperAdmin) {
       router.replace("/home");
     }
-  }, [canManageObjects, hasEffectivePermission, hasFullAccess, isAdmin, isLoading, isAuthenticated, isSuperAdmin, isCustomizeHomeRoute, isObjectManagerRoute, pathname, requiredPermission, router]);
+  }, [hasEffectivePermission, hasFullAccess, isAdmin, isLoading, isAuthenticated, isSuperAdmin, isCustomizeHomeRoute, pathname, requiredPermission, router]);
 
   if (isLoading || !isAuthenticated) return null;
   if (requiredPermission && !(hasFullAccess || hasEffectivePermission(requiredPermission))) return null;
   if (pathname.startsWith("/setup") && !isAdmin && !isSuperAdmin) return null;
   if (isCustomizeHomeRoute && !isAdmin && !isSuperAdmin) return null;
-  if (isObjectManagerRoute && !canManageObjects) return null;
-  if (pathname.startsWith("/admin") && !isObjectManagerRoute && !isCustomizeHomeRoute && !isSuperAdmin) return null;
+  if (pathname.startsWith("/admin") && !isCustomizeHomeRoute && !isSuperAdmin) return null;
   return <>{children}</>;
 }
 

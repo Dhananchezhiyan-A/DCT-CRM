@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { bookingApi } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 
 interface Booking {
   id: string;
@@ -154,6 +155,7 @@ const columns: ColumnDef<Booking>[] = [
 export default function BookingsPage() {
   const router = useRouter();
   const { toast } = useToast();
+  const { hasEffectivePermission } = useAuth();
   const [currentPage, setCurrentPage] = React.useState(1);
   const [bookings, setBookings] = React.useState<Booking[]>([]);
   const [totalItems, setTotalItems] = React.useState(0);
@@ -229,7 +231,7 @@ export default function BookingsPage() {
             Manage project unit bookings and reservations
           </p>
         </div>
-        <Button onClick={() => toast({ title: "New Booking", description: "Create booking form coming soon" })}>
+        <Button onClick={() => router.push("/bookings/new")} disabled={!hasEffectivePermission("BOOKING_CREATE")}>
           <Plus className="mr-2 h-4 w-4" />
           New Booking
         </Button>

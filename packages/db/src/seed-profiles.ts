@@ -470,6 +470,33 @@ async function main() {
       }
     }
 
+    for (const pool of ['PRESALES', 'SVC', 'SALES'] as const) {
+      const profileName = pool === 'PRESALES' ? 'Presales' : pool === 'SVC' ? 'SVC' : 'Sales';
+      const config = await prisma.roundRobinConfig.upsert({
+        where: { tenantId_poolType: { tenantId: tenant.id, poolType: pool } },
+        update: { isActive: true, profileName },
+        create: {
+          tenantId: tenant.id,
+          poolType: pool,
+          name: `${profileName} Test Round Robin`,
+          description: `Seeded ${profileName} test assignment pool`,
+          profileName,
+          isActive: true,
+        },
+      });
+      void config;
+      for (let index = 1; index <= 3; index += 1) {
+        const email = `${profileName.toLowerCase()}.test${index}@dctcrm.com`;
+        const user = seededUsers.get(email);
+        if (!user) throw new Error(`Missing Round Robin test user: ${email}`);
+        await prisma.roundRobinMember.upsert({
+          where: { tenantId_userId_poolType: { tenantId: tenant.id, userId: user.id, poolType: pool } },
+          update: { isActive: true },
+          create: { tenantId: tenant.id, userId: user.id, poolType: pool, isActive: true },
+        });
+      }
+    }
+
     console.log(`Seeded ${seededUsers.size} deterministic test users with password ${testPassword}`);
     }
 

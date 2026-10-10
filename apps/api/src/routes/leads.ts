@@ -12,16 +12,20 @@ import {
   leadScopeClause,
 } from '../services/recordAccess';
 import { getNextSiteVisitNumber, normalizeOverdueSiteVisits } from '../services/leadWorkflowExtras';
-import { validateFieldValue } from '../services/metadata';
-import { changeLeadOwner, getEligibleLeadOwners } from '../services/leadOwnerChange';
-import { processLeadEnquiry, sourceEnumValue } from '../services/enquiryProcessing';
-import { getLeadEnquiries } from '../services/enquiryService';
 import {
+  assignLeadToProjectRoundRobinInTransaction,
+  assignSiteVisitToSVCInTransaction,
+  assignCompletedSiteVisitToSalesInTransaction,
+  selectNextProjectRRMemberInTransaction,
   findApplicableRRQueue,
   hasLeadAssignmentRelevantChanges,
   isLeadEligibleForAutoAssignment,
   RoundRobinAssignmentService,
 } from '../services/rrQueue';
+import { validateFieldValue } from '../services/metadata';
+import { changeLeadOwner, getEligibleLeadOwners } from '../services/leadOwnerChange';
+import { processLeadEnquiry, sourceEnumValue } from '../services/enquiryProcessing';
+import { getLeadEnquiries } from '../services/enquiryService';
 import { z } from 'zod';
 
 const router = Router();
@@ -533,6 +537,15 @@ router.post('/:id/enquiries', authorize('Enquiry', 'create'), async (req: AuthRe
     if (error?.message === 'INVALID_PROJECT') {
       return res.status(400).json({ success: false, error: 'Invalid project' });
     }
+    if (error?.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required to assign this lead to Pre Sales.' });
+    }
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Pre Sales' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Pre Sales') {
+      return res.status(409).json({ success: false, error: 'No eligible Pre Sales round-robin member is configured for this project.' });
+    }
+    if (error?.message === 'SVC_QUEUE_NOT_CONFIGURED' || error?.message === 'NO_ELIGIBLE_SVC_MEMBER') {
+      return res.status(409).json({ success: false, error: 'No eligible SVC owner is configured for this project.' });
+    }
     if (error?.message === 'PHONE_REQUIRED') {
       return res.status(400).json({ success: false, error: 'A phone number is required' });
     }
@@ -689,7 +702,12 @@ router.post('/:id/convert', authorize('Opportunity', 'create'), async (req: Auth
         if (!unit) throw new Error('INVALID_UNIT');
       }
 
-      const opportunityOwnerId = lead.ownerId || userId;
+      const crmAssignment = await selectNextProjectRRMemberInTransaction(tx, {
+        tenantId,
+        projectId,
+        userType: 'CRM',
+      });
+      const opportunityOwnerId = crmAssignment.member.userId;
 
       // Step 13: Generate Opportunity Number
       const opportunityNumber = await getNextOpportunityNumber(tx, tenantId);
@@ -716,6 +734,18 @@ router.post('/:id/convert', authorize('Opportunity', 'create'), async (req: Auth
           project: { select: { id: true, name: true } },
           unit: { select: { id: true, number: true, type: true, area: true, price: true, status: true } },
           siteVisit: { select: { id: true, siteVisitNumber: true, completedAt: true } },
+        },
+      });
+      await tx.rRQueueHistory.create({
+        data: {
+          tenantId,
+          rrQueueId: crmAssignment.queue.id,
+          leadId: lead.id,
+          field: 'CRM Opportunity Owner',
+          userId: opportunityOwnerId,
+          userName: `${crmAssignment.member.user.firstName} ${crmAssignment.member.user.lastName}`.trim() || crmAssignment.member.user.email,
+          originalValue: null,
+          newValue: opportunityOwnerId,
         },
       });
 
@@ -756,6 +786,12 @@ router.post('/:id/convert', authorize('Opportunity', 'create'), async (req: Auth
     if (error.name === 'ZodError') return res.status(400).json({ success: false, error: error.errors[0].message });
     if (typeof error.message === 'string' && error.message.startsWith('CONVERSION_STATUS_FORBIDDEN|')) {
       return res.status(403).json({ success: false, error: error.message.slice(error.message.indexOf('|') + 1) });
+    }
+    if (error.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required to assign this Opportunity to a CRM round robin.' });
+    }
+    if (error.message === 'RR_QUEUE_NOT_CONFIGURED:CRM' || error.message === 'NO_ELIGIBLE_RR_MEMBER:CRM') {
+      return res.status(409).json({ success: false, error: 'No eligible CRM round-robin member is configured for this project.' });
     }
     const errors: Record<string, [number, string]> = {
       LEAD_NOT_FOUND: [404, 'Lead not found'],
@@ -892,6 +928,7 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       assignment: result.assignment,
       enquiry: result.enquiry,
       siteVisit: result.siteVisit,
+      ...(result.assignmentWarning ? { warning: result.assignmentWarning } : {}),
       message: result.action === 'NEW_LEAD'
         ? 'New lead created and assigned'
         : result.action === 'RE_ENGAGED'
@@ -909,6 +946,12 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
     }
     if (error?.message === 'INVALID_PROJECT') {
       return res.status(400).json({ success: false, error: 'Invalid project' });
+    }
+    if (error?.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required to assign this lead to Pre Sales.' });
+    }
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Pre Sales' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Pre Sales') {
+      return res.status(409).json({ success: false, error: 'No eligible Pre Sales round-robin member is configured for this project.' });
     }
     if (error instanceof z.ZodError) {
       return res.status(400).json({ success: false, error: error.issues[0]?.message || 'Invalid enquiry data' });
@@ -1004,33 +1047,66 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
       'ownerId' in updateData &&
       normalizeDiffValue(updateData.ownerId) !== normalizeDiffValue(existingLead.ownerId);
     const shouldReassign = hasLeadAssignmentRelevantChanges(updateData);
-
     const result = await prisma.$transaction(async (tx) => {
+      let assignment: Awaited<ReturnType<typeof assignLeadToProjectRoundRobinInTransaction>> | null = null;
+      let salesHandoff: Awaited<ReturnType<typeof assignCompletedSiteVisitToSalesInTransaction>> | null = null;
+      if (updateData.status === 'LOST' && existingLead.status !== 'LOST') {
+        assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+          tenantId: existingLead.tenantId,
+          leadId: existingLead.id,
+          projectId: 'projectId' in updateData ? updateData.projectId : existingLead.projectId,
+          userType: 'Recovery',
+          actorId: req.user!.id,
+          reason: reason || 'Lead marked Lost',
+        });
+      }
+      if (updateData.status === 'SITE_VISIT_HAPPENED' && existingLead.status !== 'SITE_VISIT_HAPPENED') {
+        const completedVisit = await tx.siteVisit.findFirst({
+          where: { tenantId: existingLead.tenantId, leadId: existingLead.id, status: 'COMPLETED', completedAt: { not: null }, completedById: { not: null } },
+          orderBy: [{ completedAt: 'desc' }, { updatedAt: 'desc' }],
+          select: { id: true },
+        });
+        if (!completedVisit) throw new Error('COMPLETED_SITE_VISIT_REQUIRED');
+        salesHandoff = await assignCompletedSiteVisitToSalesInTransaction(tx, completedVisit.id, existingLead.tenantId);
+      }
+
+      const persistedUpdateData = {
+        ...updateData,
+        ...(assignment ? { ownerId: assignment.assignedUserId, rrQueueId: assignment.queueId } : {}),
+        ...(salesHandoff?.assignedUserId
+          ? { ownerId: salesHandoff.assignedUserId, rrQueueId: salesHandoff.queueId }
+          : {}),
+      };
       const lead = await tx.lead.update({
         where: { id: req.params.id },
-        data: updateData,
+        data: persistedUpdateData,
         include: {
           owner: { select: { id: true, firstName: true, lastName: true } },
           project: { select: { id: true, name: true } },
         },
       });
 
+      const workflowAssigned = !!assignment || !!salesHandoff?.assignedUserId;
       const auditNewValues = reason ? { ...newValues, reason } : newValues;
-
-      await tx.auditLog.create({
-        data: {
-          tenantId: existingLead.tenantId,
-          userId: req.user!.id,
-          leadId: lead.id,
-          action: ownerChanged && Object.keys(newValues).length === 1 ? 'OWNER_CHANGED' : 'UPDATE',
-          objectType: 'Lead',
-          objectId: lead.id,
-          oldValues,
-          newValues: auditNewValues,
+      const auditData = {
+        tenantId: existingLead.tenantId,
+        userId: req.user!.id,
+        leadId: lead.id,
+        action: ownerChanged && Object.keys(newValues).length === 1 ? 'OWNER_CHANGED' : 'UPDATE',
+        objectType: 'Lead',
+        objectId: lead.id,
+        oldValues,
+        newValues: {
+          ...auditNewValues,
+          ...(assignment ? { ownerId: assignment.assignedUserId, rrQueueId: assignment.queueId } : {}),
+          ...(salesHandoff?.assignedUserId
+            ? { ownerId: salesHandoff.assignedUserId, rrQueueId: salesHandoff.queueId }
+            : {}),
         },
-      });
+      };
+      await tx.auditLog.create({ data: auditData });
 
-      if (ownerChanged) {
+      if (ownerChanged && !workflowAssigned) {
         const newOwnerId = normalizeDiffValue(updateData.ownerId);
         const newOwner = newOwnerId
           ? await tx.user.findUnique({
@@ -1069,8 +1145,8 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
         leadReassign: shouldReassign,
       };
 
-      let assignment: any = null;
-      if (shouldReassign && isLeadEligibleForAutoAssignment(leadForAssignment, { isNewLead: false })) {
+      let rrAssignment: any = null;
+      if (!workflowAssigned && shouldReassign && isLeadEligibleForAutoAssignment(leadForAssignment, { isNewLead: false })) {
         const queue = await findApplicableRRQueue(existingLead.tenantId, {
           projectId: leadForAssignment.projectId,
           projectName: leadForAssignment.projectName,
@@ -1079,17 +1155,32 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
           priority: String(leadForAssignment.rating || ''),
         }, tx);
         if (queue) {
-          assignment = await RoundRobinAssignmentService.assignLeadInTransaction(tx, queue.id, lead.id, existingLead.tenantId);
+          rrAssignment = await RoundRobinAssignmentService.assignLeadInTransaction(
+            tx,
+            queue.id,
+            lead.id,
+            existingLead.tenantId,
+            req.user!.id,
+          );
         }
       }
 
-      return { ...lead, assignment };
+      return { ...lead, assignment: rrAssignment };
     });
 
     res.json({ success: true, data: result });
   } catch (error: any) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: error.errors[0].message });
+    }
+    if (error?.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required for this round-robin assignment.' });
+    }
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Recovery' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Recovery') {
+      return res.status(409).json({ success: false, error: 'No eligible Recovery round-robin member is configured for this project.' });
+    }
+    if (error?.message === 'COMPLETED_SITE_VISIT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A completed site visit is required before assigning Sales.' });
     }
     if (isPhoneUniqueViolation(error)) {
       return res.status(409).json({ success: false, error: PHONE_DUPLICATE_ERROR });
@@ -1235,12 +1326,17 @@ router.post('/:id/push-to-svc', authorize('Lead', 'edit'), async (req: AuthReque
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const updatedLead = await tx.lead.update({
+      const assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+        tenantId: lead.tenantId,
+        leadId: lead.id,
+        projectId: lead.projectId,
+        userType: 'SVC',
+        actorId: req.user!.id,
+        reason: 'Lead pushed to SVC',
+      });
+      await tx.lead.update({
         where: { id: req.params.id },
         data: { status: 'PROSPECT', lostAt: null },
-        include: {
-          owner: { select: { id: true, firstName: true, lastName: true } },
-        },
       });
 
       await tx.auditLog.create({
@@ -1254,17 +1350,27 @@ router.post('/:id/push-to-svc', authorize('Lead', 'edit'), async (req: AuthReque
           oldValues: { status: 'INCOMING', ownerId: lead.ownerId },
           newValues: {
             status: 'PROSPECT',
+            ownerId: assignment.assignedUserId,
             note: reason,
             reason,
           },
         },
       });
 
-      return updatedLead;
+      return tx.lead.findUniqueOrThrow({
+        where: { id: lead.id },
+        include: { owner: { select: { id: true, firstName: true, lastName: true } } },
+      });
     });
 
     res.json({ success: true, data: result });
   } catch (error: any) {
+    if (error?.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required to push this lead to SVC.' });
+    }
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:SVC' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:SVC') {
+      return res.status(409).json({ success: false, error: 'No eligible SVC round-robin member is configured for this project.' });
+    }
     console.error('Push to SVC error:', error);
     res.status(500).json({ success: false, error: 'Failed to push lead to SVC' });
   }
@@ -1303,27 +1409,18 @@ router.post('/:id/move-to-recovery', authorize('Lead', 'edit'), async (req: Auth
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const updatedLead = await tx.lead.update({
+      const assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+        tenantId: lead.tenantId,
+        leadId: lead.id,
+        projectId: lead.projectId,
+        userType: 'Recovery',
+        actorId: req.user!.id,
+        reason: recoveryReason,
+      });
+      await tx.lead.update({
         where: { id: req.params.id },
         data: { status: 'LOST', lostAt: new Date() },
-        include: { owner: { select: { id: true, firstName: true, lastName: true } } },
       });
-
-      await createOwnerHistory(
-        {
-          tenantId: lead.tenantId,
-          leadId: lead.id,
-          previousOwnerId: lead.ownerId,
-          newOwnerId: null,
-          previousProfile: profileName,
-          newProfile: 'Recovery',
-          previousStatus: lead.status,
-          newStatus: 'LOST',
-          handoffReason: recoveryReason,
-          changedById: req.user!.id,
-        },
-        tx,
-      );
 
       await tx.auditLog.create({
         data: {
@@ -1334,15 +1431,24 @@ router.post('/:id/move-to-recovery', authorize('Lead', 'edit'), async (req: Auth
           objectType: 'Lead',
           objectId: lead.id,
           oldValues: { status: lead.status, ownerId: lead.ownerId },
-          newValues: { status: 'LOST', recoveryReason, recoveryNote: note, reason: recoveryReason },
+          newValues: { status: 'LOST', ownerId: assignment.assignedUserId, recoveryReason, recoveryNote: note, reason: recoveryReason },
         },
       });
 
-      return updatedLead;
+      return tx.lead.findUniqueOrThrow({
+        where: { id: lead.id },
+        include: { owner: { select: { id: true, firstName: true, lastName: true } } },
+      });
     });
 
     res.json({ success: true, data: result });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required to assign this lead to Recovery.' });
+    }
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Recovery' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Recovery') {
+      return res.status(409).json({ success: false, error: 'No eligible Recovery round-robin member is configured for this project.' });
+    }
     console.error('Move to recovery error:', error);
     res.status(500).json({ success: false, error: 'Failed to move lead to recovery' });
   }
@@ -1400,19 +1506,20 @@ router.post('/:id/schedule-site-visit', authorize('Lead', 'edit'), async (req: A
           tenantId: lead.tenantId,
           leadId: lead.id,
           projectId,
-          assigneeId: lead.ownerId || req.user!.id,
           creatorId: req.user!.id,
           siteVisitNumber,
           scheduledAt: new Date(scheduledAt),
           status: 'SCHEDULED',
           notes,
         },
-        include: {
-          assignee: { select: { id: true, firstName: true, lastName: true } },
-          project: { select: { id: true, name: true } },
-        },
+        select: { id: true },
       });
 
+      await assignSiteVisitToSVCInTransaction(tx, {
+        siteVisitId: siteVisit.id,
+        tenantId: lead.tenantId,
+        actorId: req.user!.id,
+      });
       const updatedLead = await tx.lead.update({
         where: { id: req.params.id },
         data: { status: 'SITE_VISIT_SCHEDULED', lostAt: null },
@@ -1439,13 +1546,23 @@ router.post('/:id/schedule-site-visit', authorize('Lead', 'edit'), async (req: A
         },
       });
 
-      return { lead: updatedLead, siteVisit };
+      const assignedSiteVisit = await tx.siteVisit.findUniqueOrThrow({
+        where: { id: siteVisit.id },
+        include: {
+          assignee: { select: { id: true, firstName: true, lastName: true } },
+          project: { select: { id: true, name: true } },
+        },
+      });
+      return { lead: updatedLead, siteVisit: assignedSiteVisit };
     });
 
     res.json({ success: true, data: result });
   } catch (error: any) {
     if (error?.message === 'PROJECT_NOT_AVAILABLE') {
       return res.status(404).json({ success: false, error: 'Project not found' });
+    }
+    if (error?.message === 'SVC_QUEUE_NOT_CONFIGURED' || error?.message === 'NO_ELIGIBLE_SVC_MEMBER') {
+      return res.status(409).json({ success: false, error: 'No eligible SVC owner is configured for this project.' });
     }
     console.error('Schedule site visit error:', error);
     res.status(500).json({ success: false, error: 'Failed to schedule site visit' });
@@ -1491,26 +1608,80 @@ router.put('/:id/status', authorize('Lead', 'edit'), async (req: AuthRequest, re
       }
     }
 
-    const updatedLead = await prisma.lead.update({
-      where: { id: req.params.id },
-      data: { status, lostAt: status === 'LOST' ? new Date() : null },
+    const result = await prisma.$transaction(async (tx) => {
+      let assignment: Awaited<ReturnType<typeof assignLeadToProjectRoundRobinInTransaction>> | null = null;
+      let salesHandoff: Awaited<ReturnType<typeof assignCompletedSiteVisitToSalesInTransaction>> | null = null;
+      if (status === 'LOST' && lead.status !== 'LOST') {
+        assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+          tenantId: lead.tenantId,
+          leadId: lead.id,
+          projectId: lead.projectId,
+          userType: 'Recovery',
+          actorId: req.user!.id,
+          reason: note,
+        });
+      } else if (status === 'SITE_VISIT_HAPPENED' && lead.status !== 'SITE_VISIT_HAPPENED') {
+        const completedVisit = await tx.siteVisit.findFirst({
+          where: { tenantId: lead.tenantId, leadId: lead.id, status: 'COMPLETED', completedAt: { not: null }, completedById: { not: null } },
+          orderBy: [{ completedAt: 'desc' }, { updatedAt: 'desc' }],
+          select: { id: true },
+        });
+        if (!completedVisit) throw new Error('COMPLETED_SITE_VISIT_REQUIRED');
+        salesHandoff = await assignCompletedSiteVisitToSalesInTransaction(tx, completedVisit.id, lead.tenantId);
+      }
+
+      await tx.lead.update({
+        where: { id: req.params.id },
+        data: {
+          status,
+          lostAt: status === 'LOST' ? new Date() : null,
+          ...(assignment ? { ownerId: assignment.assignedUserId, rrQueueId: assignment.queueId } : {}),
+          ...(salesHandoff?.assignedUserId
+            ? { ownerId: salesHandoff.assignedUserId, rrQueueId: salesHandoff.queueId }
+            : {}),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: lead.tenantId,
+          userId: req.user!.id,
+          leadId: lead.id,
+          action: 'STATUS_CHANGE',
+          objectType: 'Lead',
+          objectId: lead.id,
+          oldValues: { status: lead.status },
+          newValues: {
+            status,
+            ...(assignment ? { ownerId: assignment.assignedUserId, rrQueueId: assignment.queueId } : {}),
+            ...(salesHandoff?.assignedUserId ? { ownerId: salesHandoff.assignedUserId, rrQueueId: salesHandoff.queueId } : {}),
+            note,
+            reason: note,
+          },
+        },
+      });
+
+      const updated = await tx.lead.findUniqueOrThrow({
+        where: { id: lead.id },
+        include: { owner: { select: { id: true, firstName: true, lastName: true } } },
+      });
+      return { lead: updated, salesHandoff };
     });
 
-    await prisma.auditLog.create({
-      data: {
-        tenantId: lead.tenantId,
-        userId: req.user!.id,
-        leadId: lead.id,
-        action: 'STATUS_CHANGE',
-        objectType: 'Lead',
-        objectId: lead.id,
-        oldValues: { status: lead.status },
-        newValues: { status, note, reason: note },
-      },
-    });
-
-    res.json({ success: true, data: updatedLead });
-  } catch (error) {
+    if (result.salesHandoff?.pendingReason) {
+      return res.status(409).json({ success: false, error: result.salesHandoff.pendingReason, data: result });
+    }
+    res.json({ success: true, data: result.lead });
+  } catch (error: any) {
+    if (error?.message === 'RR_PROJECT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A project is required for this round-robin assignment.' });
+    }
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Recovery' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Recovery') {
+      return res.status(409).json({ success: false, error: 'No eligible Recovery round-robin member is configured for this project.' });
+    }
+    if (error?.message === 'COMPLETED_SITE_VISIT_REQUIRED') {
+      return res.status(409).json({ success: false, error: 'A completed site visit is required before assigning Sales.' });
+    }
     console.error('Update lead status error:', error);
     res.status(500).json({ success: false, error: 'Failed to update lead status' });
   }

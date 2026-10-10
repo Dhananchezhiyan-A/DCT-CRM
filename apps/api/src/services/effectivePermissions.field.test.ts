@@ -9,6 +9,15 @@ vi.mock('@dct-crm/db', () => ({
     profileFieldPermission: {
       findMany: vi.fn(),
     },
+    userProfilePermission: {
+      findMany: vi.fn(),
+    },
+    profileObjectPermission: {
+      findMany: vi.fn(),
+    },
+    permissionSet: {
+      findMany: vi.fn(),
+    },
     userPermissionAssignment: {
       findMany: vi.fn(),
     },
@@ -117,6 +126,21 @@ describe('effective field permissions', () => {
     expect(result).toEqual(['perm-read']);
   });
 
+  it('adds permission IDs for enabled profile object grants', () => {
+    const result = reconcilePermissionIdsForObjectPermissions(
+      [{ objectId: 'lead-1', canCreate: true, canRead: true, canUpdate: false, canDelete: false, viewAll: false, modifyAll: false }],
+      [],
+      [
+        { id: 'lead-create', name: 'LEAD_CREATE' },
+        { id: 'lead-read', name: 'LEAD_READ' },
+        { id: 'lead-update', name: 'LEAD_UPDATE' },
+      ],
+      { 'lead-1': 'Lead' },
+    );
+
+    expect(result).toEqual(['lead-create', 'lead-read']);
+  });
+
   it('removes stale delete permission IDs when delete access is disabled', () => {
     const permissionIds = ['perm-read', 'perm-delete'];
     const permissionCatalog = [
@@ -146,7 +170,12 @@ describe('effective field permissions', () => {
     }];
 
     const permissionCatalog = [
+      { id: 'perm-create', name: 'PROJECT_CREATE' },
       { id: 'perm-read', name: 'PROJECT_READ' },
+      { id: 'perm-update', name: 'PROJECT_UPDATE' },
+      { id: 'perm-delete', name: 'PROJECT_DELETE' },
+      { id: 'perm-view-all', name: 'PROJECT_VIEW_ALL' },
+      { id: 'perm-modify-all', name: 'PROJECT_MODIFY_ALL' },
     ];
 
     const result = reconcileObjectPermissionsForPermissionIds(
@@ -157,6 +186,17 @@ describe('effective field permissions', () => {
     );
 
     expect(result).toEqual([{ objectId: 'proj-1', canCreate: false, canRead: true, canUpdate: false, canDelete: false, viewAll: false, modifyAll: false }]);
+  });
+
+  it('preserves View All and Manage All when the permission catalog has no matching IDs', () => {
+    const result = reconcileObjectPermissionsForPermissionIds(
+      [{ objectId: 'lead-1', canCreate: false, canRead: true, canUpdate: false, canDelete: false, viewAll: true, modifyAll: true }],
+      ['lead-read'],
+      [{ id: 'lead-read', name: 'LEAD_READ' }],
+      { 'lead-1': 'Lead' },
+    );
+
+    expect(result).toEqual([{ objectId: 'lead-1', canCreate: false, canRead: true, canUpdate: false, canDelete: false, viewAll: true, modifyAll: true }]);
   });
 
   it('does not grant global access based only on an admin profile flag', async () => {
@@ -176,5 +216,34 @@ describe('effective field permissions', () => {
     const result = await EffectivePermissionService.getEffectivePermissions('user-1');
 
     expect(result).toEqual([]);
+  });
+});
+
+describe('effective profile permissions', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it('includes object grants from the profile permission sets without requiring a role', async () => {
+    vi.mocked(prisma.userProfilePermission.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.profileObjectPermission.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.permissionSet.findMany).mockResolvedValue([
+      {
+        name: 'SVC Site Visit Access',
+        objectName: 'SiteVisit',
+        permissions: { read: true, create: true, edit: true, delete: false },
+      },
+    ] as any);
+
+    const result = await EffectivePermissionService.getProfilePermissions('profile-svc', 'tenant-1');
+
+    expect(prisma.permissionSet.findMany).toHaveBeenCalled();
+    expect(result.map((permission) => permission.name)).toEqual([
+      'SITE_VISIT_CREATE',
+      'SITE_VISIT_READ',
+      'SITE_VISIT_UPDATE',
+    ]);
+    expect(result.every((permission) => permission.source === 'PROFILE')).toBe(true);
   });
 });

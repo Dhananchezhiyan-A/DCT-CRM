@@ -1,16 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { flushSync } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import {
-  DragDropContext,
-  Draggable,
-  Droppable,
-  type DragStart,
-  type DragUpdate,
-  type DropResult,
-} from "@hello-pangea/dnd";
 import { Rnd } from "react-rnd";
 import {
   ArrowLeft,
@@ -26,7 +17,15 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { homepageApi, profileApi, reportApi } from "@/lib/api";
+import {
+  activityApi,
+  analyticsApi,
+  homepageApi,
+  opportunityApi,
+  profileApi,
+  reportApi,
+  taskApi,
+} from "@/lib/api";
 
 interface Widget {
   id: string;
@@ -78,8 +77,15 @@ interface WidgetSize {
   columns: number;
   rows: number;
 }
+interface DashboardPreviewData {
+  kpis: Record<string, string>;
+  recentOpportunities: any[];
+  pipelineStages: { stage: string; count: number; amount: number }[];
+  upcomingTasks: any[];
+  recentActivities: any[];
+  loading: boolean;
+}
 
-const GRID_SIZE = 16;
 const CELL_WIDTH = 85;
 const CELL_HEIGHT = 116;
 const CELL_GAP = 8;
@@ -90,6 +96,12 @@ const GRID_SLOT_WIDTH = CELL_WIDTH + CELL_GAP;
 const GRID_SLOT_HEIGHT = CELL_HEIGHT + CELL_GAP;
 const GRID_COLUMNS = 12;
 const GRID_ROWS = 8;
+const CANVAS_WIDTH =
+  CELL_ORIGIN * 2 +
+  GRID_COLUMNS * CELL_WIDTH +
+  (GRID_COLUMNS - 1) * CELL_GAP;
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
 
 const widgetSizes: Record<string, WidgetSize> = {
   "total-leads": { columns: 3, rows: 1 },
@@ -251,6 +263,33 @@ const topRowWidgetIds = new Set([
 const responseData = (response: any) => response?.data?.data ?? response?.data;
 const DEBUG_DND = false;
 
+function slugifyProfileName(name: string) {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function formatDashboardAmount(amount: number) {
+  if (amount >= 10000000) return `₹${(amount / 10000000).toFixed(1)}Cr`;
+  if (amount >= 100000) return `₹${(amount / 100000).toFixed(1)}L`;
+  if (amount >= 1000) return `₹${(amount / 1000).toFixed(1)}K`;
+  return `₹${amount}`;
+}
+
+function formatDashboardTimeAgo(value: string) {
+  const diff = Date.now() - new Date(value).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "Now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+
 function debugDnd(label: string, details: Record<string, unknown>) {
   if (DEBUG_DND && typeof window !== "undefined") {
     console.debug(`[homepage-dnd] ${label}`, details);
@@ -317,14 +356,106 @@ function overlaps(first: WidgetLayout, second: WidgetLayout) {
   );
 }
 
+function isWithinCanvas(layout: WidgetLayout) {
+  return (
+    layout.x >= CELL_ORIGIN &&
+    layout.y >= CELL_ORIGIN &&
+    layout.x + layout.width <= CANVAS_WIDTH - CELL_ORIGIN
+  );
+}
+
 function canPlace(
   id: string,
   candidate: WidgetLayout,
   layouts: Record<string, WidgetLayout>,
 ) {
+  if (!isWithinCanvas(candidate)) return false;
   return Object.values(layouts).every(
     (layout) => layout.id === id || !overlaps(candidate, layout),
   );
+}
+
+function findFreeSwapLayout(
+  layout: WidgetLayout,
+  preferred: { x: number; y: number },
+  occupied: Record<string, WidgetLayout>,
+): WidgetLayout | null {
+  const normalized = snapLayout({ ...layout, x: CELL_ORIGIN, y: CELL_ORIGIN });
+  const columns = clamp(
+    Math.round((normalized.width + CELL_GAP) / GRID_SLOT_WIDTH),
+    1,
+    GRID_COLUMNS,
+  );
+  const preferredColumn = clamp(
+    Math.round((preferred.x - CELL_ORIGIN) / GRID_SLOT_WIDTH),
+    0,
+    GRID_COLUMNS - columns,
+  );
+  const preferredRow = Math.max(
+    0,
+    Math.round((preferred.y - CELL_ORIGIN) / GRID_SLOT_HEIGHT),
+  );
+  const rows = Math.max(
+    GRID_ROWS,
+    Object.keys(occupied).length * 5 +
+      Math.ceil(normalized.height / GRID_SLOT_HEIGHT) +
+      1,
+  );
+  let nearest: { layout: WidgetLayout; distance: number } | null = null;
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column <= GRID_COLUMNS - columns; column += 1) {
+      const candidate = {
+        ...normalized,
+        x: CELL_ORIGIN + column * GRID_SLOT_WIDTH,
+        y: CELL_ORIGIN + row * GRID_SLOT_HEIGHT,
+      };
+      if (!isWithinCanvas(candidate)) continue;
+      if (
+        Object.values(occupied).some((other) => overlaps(candidate, other))
+      ) {
+        continue;
+      }
+      const distance =
+        Math.abs(column - preferredColumn) + Math.abs(row - preferredRow);
+      if (
+        !nearest ||
+        distance < nearest.distance ||
+        (distance === nearest.distance &&
+          row < (nearest.layout.y - CELL_ORIGIN) / GRID_SLOT_HEIGHT)
+      ) {
+        nearest = { layout: candidate, distance };
+      }
+    }
+  }
+  return nearest?.layout ?? null;
+}
+
+function placeWithDisplacement(
+  id: string,
+  candidate: WidgetLayout,
+  layouts: Record<string, WidgetLayout>,
+): Record<string, WidgetLayout> | null {
+  if (!isWithinCanvas(candidate)) return null;
+  const displaced = Object.values(layouts).filter(
+    (layout) => layout.id !== id && overlaps(candidate, layout),
+  );
+  if (!displaced.length) {
+    return { ...layouts, [id]: candidate };
+  }
+
+  const next = Object.fromEntries(
+    Object.entries(layouts).filter(
+      ([layoutId]) =>
+        layoutId !== id && !displaced.some((layout) => layout.id === layoutId),
+    ),
+  ) as Record<string, WidgetLayout>;
+  next[id] = candidate;
+  for (const layout of displaced) {
+    const destination = findFreeSwapLayout(layout, layout, next);
+    if (!destination) return null;
+    next[layout.id] = destination;
+  }
+  return next;
 }
 
 function findFreeLayout(
@@ -375,7 +506,6 @@ function layoutAtDropPoint(
   id: string,
   x: number,
   y: number,
-  layouts: Record<string, WidgetLayout>,
 ): WidgetLayout {
   const size = getWidgetSize(id);
   const dimensions = getWidgetDimensions(id);
@@ -393,24 +523,7 @@ function layoutAtDropPoint(
     y: CELL_ORIGIN + row * GRID_SLOT_HEIGHT,
     ...dimensions,
   };
-  const canUseCandidate = canPlace(id, candidate, layouts);
-  if (canUseCandidate) {
-    debugDnd("grid candidate accepted", {
-      id,
-      inputX: x,
-      inputY: y,
-      column,
-      row,
-      candidateX: candidate.x,
-      candidateY: candidate.y,
-      candidateWidth: candidate.width,
-      candidateHeight: candidate.height,
-      collision: false,
-    });
-    return candidate;
-  }
-  const fallback = findFreeLayout(id, layouts, column, row);
-  debugDnd("grid candidate replaced by auto-placement", {
+  debugDnd("grid drop position", {
     id,
     inputX: x,
     inputY: y,
@@ -418,19 +531,38 @@ function layoutAtDropPoint(
     row,
     candidateX: candidate.x,
     candidateY: candidate.y,
-    fallbackX: fallback.x,
-    fallbackY: fallback.y,
-    fallbackWidth: fallback.width,
-    fallbackHeight: fallback.height,
-    collision: true,
+    candidateWidth: candidate.width,
+    candidateHeight: candidate.height,
   });
-  return fallback;
+  return candidate;
 }
 
-function snapToSlot(value: number, slot: number) {
-  return (
-    CELL_ORIGIN + Math.max(0, Math.round((value - CELL_ORIGIN) / slot)) * slot
+function snapLayout(layout: WidgetLayout): WidgetLayout {
+  const columns = clamp(
+    Math.round((layout.width + CELL_GAP) / GRID_SLOT_WIDTH),
+    1,
+    GRID_COLUMNS,
   );
+  const rows = Math.max(
+    1,
+    Math.round((layout.height + CELL_GAP) / GRID_SLOT_HEIGHT),
+  );
+  const column = clamp(
+    Math.round((layout.x - CELL_ORIGIN) / GRID_SLOT_WIDTH),
+    0,
+    GRID_COLUMNS - columns,
+  );
+  const row = Math.max(
+    0,
+    Math.round((layout.y - CELL_ORIGIN) / GRID_SLOT_HEIGHT),
+  );
+  return {
+    id: layout.id,
+    x: CELL_ORIGIN + column * GRID_SLOT_WIDTH,
+    y: CELL_ORIGIN + row * GRID_SLOT_HEIGHT,
+    width: columns * CELL_WIDTH + (columns - 1) * CELL_GAP,
+    height: rows * CELL_HEIGHT + (rows - 1) * CELL_GAP,
+  };
 }
 
 function ReportResultsWidget({ reportId }: { reportId: string }) {
@@ -534,9 +666,25 @@ function ReportResultsWidget({ reportId }: { reportId: string }) {
   );
 }
 
-function WidgetContent({ widget }: { widget: Widget }) {
+function WidgetContent({
+  widget,
+  previewData,
+}: {
+  widget: Widget;
+  previewData: DashboardPreviewData;
+}) {
   if (widget.id.startsWith("report-")) {
     return <ReportResultsWidget reportId={widget.id.replace("report-", "")} />;
+  }
+
+  if (widget.type === "kpi" && widget.id in previewData.kpis) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center px-4 py-3">
+        <p className="truncate text-[clamp(15px,3vw,28px)] font-semibold text-slate-800">
+          {previewData.loading ? "Loading..." : previewData.kpis[widget.id]}
+        </p>
+      </div>
+    );
   }
 
   if (widget.id === "leads-by-source") {
@@ -573,14 +721,29 @@ function WidgetContent({ widget }: { widget: Widget }) {
   if (widget.id === "recent-opportunities") {
     return (
       <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-200 py-2 text-[clamp(10px,1.5vw,14px)] font-medium">
-          <span>Deal Owner</span>
-          <span className="text-right">Sum Of Amount</span>
-        </div>
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] py-3 text-[clamp(10px,1.5vw,14px)]">
-          <span className="truncate">1. Yeshwanth</span>
-          <span className="truncate text-right">Rs. 35,000.00</span>
-        </div>
+        {previewData.recentOpportunities.length === 0 ? (
+          <div className="flex h-full min-h-[120px] items-center justify-center text-sm text-muted-foreground">
+            {previewData.loading ? "Loading opportunities..." : "No recent opportunities"}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {previewData.recentOpportunities.map((opportunity) => (
+              <div key={opportunity.id} className="flex items-center justify-between gap-3 rounded-md border bg-muted/20 p-3">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-slate-800">
+                    {opportunity.name || "Untitled Opportunity"}
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    {opportunity.stage || "—"}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right font-semibold text-slate-800">
+                  {formatDashboardAmount(opportunity.amount || 0)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -588,36 +751,80 @@ function WidgetContent({ widget }: { widget: Widget }) {
   if (widget.id === "pipeline-summary") {
     return (
       <div className="grid min-h-0 flex-1 grid-rows-4 overflow-auto px-3 pb-3 text-[clamp(10px,1.5vw,14px)]">
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center border-b border-slate-200">
-          <span>LEADS CREATED</span><span className="text-center">10</span>
-        </div>
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center border-b border-slate-200 bg-muted/50">
-          <span>DEALS CREATED</span><span className="text-center">10</span>
-        </div>
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center border-b border-slate-200">
-          <span>DEALS WON</span><span className="text-center">1</span>
-        </div>
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center bg-muted/50">
-          <span>REVENUE WON</span><span className="truncate text-center">Rs. 35,000.00</span>
-        </div>
+        {previewData.loading && previewData.pipelineStages.length === 0 ? (
+          <div className="row-span-4 flex items-center justify-center text-sm text-muted-foreground">
+            Loading pipeline...
+          </div>
+        ) : previewData.pipelineStages.length === 0 ? (
+          <div className="row-span-4 flex items-center justify-center text-sm text-muted-foreground">
+            No pipeline data
+          </div>
+        ) : previewData.pipelineStages.map((stage, index) => (
+          <div
+            key={stage.stage}
+            className={`grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center border-b border-slate-200 ${index % 2 ? "bg-muted/50" : ""}`}
+          >
+            <span className="capitalize">{stage.stage.toLowerCase().replace(/_/g, " ")}</span>
+            <span className="text-center">{stage.count} • {formatDashboardAmount(stage.amount)}</span>
+          </div>
+        ))}
       </div>
     );
   }
 
-  if (widget.id === "upcoming-tasks" || widget.id === "recent-activity") {
+  if (widget.id === "upcoming-tasks") {
     return (
-      <div className="flex min-h-0 flex-1 flex-col justify-center gap-3 overflow-x-hidden overflow-y-auto px-4 py-3">
-        <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1 text-[clamp(10px,1.5vw,14px)]">
-          <span className="min-w-0 max-w-full break-words">Entire Org</span>
-          <span className="min-w-0 max-w-full break-words text-right">Target: Rs. 10,000.00</span>
-        </div>
-        <div className="h-[clamp(22px,16%,42px)] w-full overflow-hidden rounded-sm bg-slate-200">
-          <div className="h-full w-[82%] bg-emerald-300/70" />
-        </div>
-        <div className="flex justify-between text-[clamp(9px,1.3vw,12px)] text-muted-foreground">
-          <span>0</span><span>400000</span><span>800000</span>
-        </div>
-        <p className="text-center text-[clamp(12px,1.8vw,18px)] font-semibold text-slate-700">Sum of Amount</p>
+      <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+        {previewData.upcomingTasks.length === 0 ? (
+          <div className="flex h-full min-h-[120px] items-center justify-center text-sm text-muted-foreground">
+            {previewData.loading ? "Loading tasks..." : "No upcoming tasks"}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {previewData.upcomingTasks.map((task) => (
+              <div key={task.id} className="flex items-center justify-between gap-3 rounded-md border bg-muted/20 p-3">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-slate-800">
+                    {task.title || "Untitled Task"}
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    {task.status || "—"}
+                  </div>
+                </div>
+                <div className="shrink-0 text-xs text-muted-foreground">
+                  {task.dueDate
+                    ? new Date(task.dueDate).toLocaleDateString("en-IN", { day: "numeric", month: "short" })
+                    : "No due date"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (widget.id === "recent-activity") {
+    return (
+      <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+        {previewData.recentActivities.length === 0 ? (
+          <div className="flex h-full min-h-[120px] items-center justify-center text-sm text-muted-foreground">
+            {previewData.loading ? "Loading activity..." : "No recent activity"}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {previewData.recentActivities.map((activity) => (
+              <div key={activity.id} className="rounded-md border bg-muted/20 p-3">
+                <div className="text-sm font-medium text-slate-800">
+                  {activity.message || "Activity"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {activity.type || "Update"} • {activity.createdAt ? formatDashboardTimeAgo(activity.createdAt) : "Now"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -719,13 +926,20 @@ const resizeHandles = {
 export default function CustomizeProfileHomePage() {
   const params = useParams<{ profileName: string }>();
   const router = useRouter();
-  const profileNameOverride = useSearchParams().get("profile");
-  const homepageId =
+  const searchParams = useSearchParams();
+  const profileNameOverride = searchParams.get("profile");
+  const profileIdOverride = searchParams.get("profileId");
+  const homepageIdOverride = searchParams.get("homepageId");
+  const routeHomepageId =
     params.profileName === "create" ? null : params.profileName;
+  const [homepageId, setHomepageId] = React.useState<string | null>(routeHomepageId);
   const [ids, setIds] = React.useState(defaultIds);
   const [layouts, setLayouts] = React.useState<Record<string, WidgetLayout>>(
     () => defaultLayouts(defaultIds),
   );
+  const [dragLayouts, setDragLayouts] = React.useState<
+    Record<string, WidgetLayout>
+  >({});
   const [profiles, setProfiles] = React.useState<Profile[]>([]);
   const [reportWidgets, setReportWidgets] = React.useState<Widget[]>([]);
   const [profileIds, setProfileIds] = React.useState<string[]>([]);
@@ -739,42 +953,133 @@ export default function CustomizeProfileHomePage() {
   const [optionsOpen, setOptionsOpen] = React.useState(false);
   const [profilePickerOpen, setProfilePickerOpen] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  const [loading, setLoading] = React.useState(Boolean(homepageId));
+  const [loading, setLoading] = React.useState(
+    Boolean(routeHomepageId || homepageIdOverride || profileIdOverride),
+  );
+  const [previewData, setPreviewData] = React.useState<DashboardPreviewData>({
+    kpis: {},
+    recentOpportunities: [],
+    pipelineStages: [],
+    upcomingTasks: [],
+    recentActivities: [],
+    loading: true,
+  });
   const [notice, setNotice] = React.useState("");
   const [error, setError] = React.useState("");
   const [selectedWidgetId, setSelectedWidgetId] = React.useState<string | null>(
     null,
   );
   const [widgetRenderVersion, setWidgetRenderVersion] = React.useState(0);
-  const [dropPreview, setDropPreview] = React.useState<WidgetLayout | null>(
-    null,
-  );
+  const [widgetVersions, setWidgetVersions] = React.useState<
+    Record<string, number>
+  >({});
+  const [dropPreview, setDropPreview] = React.useState<{
+    layout: WidgetLayout;
+    valid: boolean;
+    swap: boolean;
+  } | null>(null);
+  const bumpWidget = (id: string) =>
+    setWidgetVersions((current) => ({
+      ...current,
+      [id]: (current[id] ?? 0) + 1,
+    }));
   const pointerPosition = React.useRef({ x: 0, y: 0 });
-  const pointerDraggingWidgetId = React.useRef<string | null>(null);
+  const panelPointerDrag = React.useRef<{
+    widgetId: string;
+    pointerId: number;
+  } | null>(null);
+  const dragStartLayouts = React.useRef<Record<string, WidgetLayout>>({});
   const canvasRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
-    const trackPointer = (event: PointerEvent) => {
+    const trackPointer = (event: PointerEvent | MouseEvent) => {
       pointerPosition.current = { x: event.clientX, y: event.clientY };
     };
     window.addEventListener("pointermove", trackPointer);
-    return () => window.removeEventListener("pointermove", trackPointer);
+    window.addEventListener("mousemove", trackPointer);
+    return () => {
+      window.removeEventListener("pointermove", trackPointer);
+      window.removeEventListener("mousemove", trackPointer);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
+    const loadDashboardPreview = async () => {
+      const [leadsResult, opportunitiesResult, pipelineResult, tasksResult, activitiesResult, recentOpportunitiesResult] =
+        await Promise.allSettled([
+          analyticsApi.getLeads(),
+          analyticsApi.getOpportunities(),
+          analyticsApi.getPipeline(),
+          taskApi.list({ limit: 3, sortBy: "dueDate", sortOrder: "asc" }),
+          activityApi.list({ limit: 3 }),
+          opportunityApi.list({ limit: 3, sortBy: "createdAt", sortOrder: "desc" }),
+        ]);
+      if (!active) return;
+
+      const leadsData = leadsResult.status === "fulfilled" ? leadsResult.value.data?.data : null;
+      const opportunitiesData =
+        opportunitiesResult.status === "fulfilled" ? opportunitiesResult.value.data?.data : null;
+      const pipelineData = pipelineResult.status === "fulfilled" ? pipelineResult.value.data?.data : null;
+      const tasksData = tasksResult.status === "fulfilled" ? tasksResult.value.data?.data : [];
+      const activitiesData = activitiesResult.status === "fulfilled" ? activitiesResult.value.data?.data : [];
+      const recentOpportunitiesData =
+        recentOpportunitiesResult.status === "fulfilled" ? recentOpportunitiesResult.value.data?.data : [];
+
+      setPreviewData({
+        kpis: {
+          "total-leads": String(leadsData?.total ?? 0),
+          opportunities: String(opportunitiesData?.total ?? 0),
+          "pipeline-value": formatDashboardAmount(pipelineData?.totalPipeline ?? 0),
+          "active-tasks": String(Array.isArray(tasksData) ? tasksData.length : 0),
+        },
+        recentOpportunities: Array.isArray(recentOpportunitiesData)
+          ? recentOpportunitiesData.slice(0, 3)
+          : [],
+        pipelineStages: Array.isArray(pipelineData?.stages)
+          ? pipelineData.stages
+              .filter((stage: any) => !["CLOSED_WON", "CLOSED_LOST"].includes(stage.stage))
+              .slice(0, 4)
+              .map((stage: any) => ({
+                stage: stage.stage,
+                count: stage.count,
+                amount: stage.amount ?? 0,
+              }))
+          : [],
+        upcomingTasks: Array.isArray(tasksData) ? tasksData.slice(0, 3) : [],
+        recentActivities: Array.isArray(activitiesData) ? activitiesData.slice(0, 3) : [],
+        loading: false,
+      });
+    };
+    void loadDashboardPreview();
+    return () => {
+      active = false;
+    };
   }, []);
 
   React.useEffect(() => {
     let active = true;
     Promise.all([
       profileApi.list({ limit: 100 }),
-      homepageId ? homepageApi.get(homepageId) : Promise.resolve(null),
+      routeHomepageId
+        ? homepageApi.get(routeHomepageId)
+        : homepageIdOverride
+          ? homepageApi.get(homepageIdOverride)
+          : profileIdOverride
+          ? homepageApi.list()
+          : Promise.resolve(null),
       reportApi.list({ limit: 100, view: "all" }),
     ])
       .then(([profilesResponse, homepageResponse, reportsResponse]) => {
         if (!active) return;
         const profileData = responseData(profilesResponse);
-        setProfiles(
-          (Array.isArray(profileData)
+        const profileItems = (
+          Array.isArray(profileData)
             ? profileData
-            : (profileData?.profiles ?? [])) as Profile[],
+            : (profileData?.profiles ?? [])
+        ) as Profile[];
+        setProfiles(
+          profileItems,
         );
         const reportData = responseData(reportsResponse);
         const reportItems = Array.isArray(reportData)
@@ -794,15 +1099,28 @@ export default function CustomizeProfileHomePage() {
             category: "Reports" as const,
           }));
         setReportWidgets(loadedReportWidgets);
-        if (homepageResponse) {
-          const homepage = responseData(homepageResponse);
+        const homepageResponseData = responseData(homepageResponse);
+        const existingProfileHomepage = routeHomepageId || homepageIdOverride
+          ? homepageResponseData
+          : profileIdOverride && Array.isArray(homepageResponseData)
+            ? homepageResponseData.find((candidate: any) =>
+                (candidate.sharedProfiles || []).some(
+                  (item: any) => (item.profile?.id || item.profileId) === profileIdOverride,
+                ),
+              )
+            : null;
+        if (existingProfileHomepage) {
+          const homepage = existingProfileHomepage;
+          setHomepageId(homepage.id);
           setName(profileNameOverride || homepage.name);
           setDescription(homepage.description || "");
           const saved = Array.isArray(homepage.layout) ? homepage.layout : [];
           const savedIds = saved
             .map((item: any) => (typeof item === "string" ? item : item.id))
-            .filter((id: string) => [...widgets, ...loadedReportWidgets].some((widget) => widget.id === id));
-          const effectiveIds = savedIds.length ? savedIds : defaultIds;
+            .filter((id: string) =>
+              [...widgets, ...loadedReportWidgets].some((widget) => widget.id === id),
+            );
+          const effectiveIds = savedIds;
           setIds(effectiveIds);
           const nextLayouts = defaultLayouts(effectiveIds);
           saved
@@ -810,26 +1128,29 @@ export default function CustomizeProfileHomePage() {
             .forEach((item: WidgetLayout) => {
               nextLayouts[item.id] = topRowWidgetIds.has(item.id)
                 ? {
-                    ...item,
+                    ...snapLayout(item),
                     ...getWidgetDimensions(item.id),
-                    x: item.x,
-                    y: item.y,
                   }
-                : item;
+                : snapLayout(item);
             });
           setLayouts(nextLayouts);
           setProfileIds(
-            (homepage.sharedProfiles || []).map((item: any) => item.profile.id),
+            (homepage.sharedProfiles || [])
+              .map((item: any) => item.profile?.id || item.profileId)
+              .filter((id: string | undefined): id is string => Boolean(id)),
           );
-        }
-      })
-      .then(() => {
-        if (!homepageId) {
+        } else {
+          setHomepageId(null);
           setName(profileNameOverride || "Untitled Homepage");
           setDescription("");
           setIds(defaultIds);
           setLayouts(defaultLayouts(defaultIds));
-          setProfileIds([]);
+          const selectedProfile = profileItems.find((profile) =>
+            profileIdOverride
+              ? profile.id === profileIdOverride
+              : profile.name.toLowerCase() === profileNameOverride?.toLowerCase(),
+          );
+          setProfileIds(selectedProfile ? [selectedProfile.id] : []);
         }
       })
       .catch(() => active && setError("Unable to load this home page."))
@@ -837,7 +1158,7 @@ export default function CustomizeProfileHomePage() {
     return () => {
       active = false;
     };
-  }, [homepageId, profileNameOverride]);
+  }, [routeHomepageId, homepageIdOverride, profileIdOverride, profileNameOverride]);
 
   React.useEffect(() => {
     if (!notice) return;
@@ -893,166 +1214,172 @@ export default function CustomizeProfileHomePage() {
     (_, index) => index,
   );
 
-  const getPointerLayout = (id: string) => {
-    const bounds = canvasRef.current?.getBoundingClientRect();
+  const getPointerLayout = (
+    id: string,
+    clientX = pointerPosition.current.x,
+    clientY = pointerPosition.current.y,
+  ) => {
+    const canvas = canvasRef.current;
+    const bounds = canvas?.getBoundingClientRect();
     const dropX = bounds
-      ? pointerPosition.current.x - bounds.left
+      ? clientX - bounds.left - (canvas?.clientLeft ?? 0)
       : CELL_ORIGIN;
-    const dropY = bounds ? pointerPosition.current.y - bounds.top : CELL_ORIGIN;
-    return layoutAtDropPoint(id, dropX, dropY, layouts);
+    const dropY = bounds
+      ? clientY - bounds.top - (canvas?.clientTop ?? 0)
+      : CELL_ORIGIN;
+    return layoutAtDropPoint(id, dropX, dropY);
+  };
+  const swapDestination = (
+    candidate: WidgetLayout,
+    original: WidgetLayout,
+  ) => {
+    const collisions = Object.values(layouts).filter(
+      (layout) => layout.id !== candidate.id && overlaps(candidate, layout),
+    );
+    if (collisions.length !== 1 || !isWithinCanvas(candidate)) return null;
+    const [other] = collisions;
+    const occupied = Object.fromEntries(
+      Object.entries(layouts).filter(
+        ([id]) => id !== candidate.id && id !== other.id,
+      ),
+    );
+    if (Object.values(occupied).some((layout) => overlaps(candidate, layout))) {
+      return null;
+    }
+    const destination = findFreeSwapLayout(
+      other,
+      original,
+      { ...occupied, [candidate.id]: candidate },
+    );
+    return destination ? { widget: other, layout: destination } : null;
+  };
+  const canSwapLayout = (candidate: WidgetLayout) => {
+    const original = dragStartLayouts.current[candidate.id];
+    return Boolean(original && swapDestination(candidate, original));
+  };
+  const previewFor = (layout: WidgetLayout) => {
+    const valid = canPlace(layout.id, layout, layouts);
+    const swap = !valid && canSwapLayout(layout);
+    const canDisplace =
+      !valid &&
+      !swap &&
+      !ids.includes(layout.id) &&
+      Boolean(placeWithDisplacement(layout.id, layout, layouts));
+    return valid || swap || canDisplace
+      ? { layout, valid: valid || canDisplace, swap }
+      : null;
   };
 
-  const commitAvailableWidget = (id: string) => {
+  const commitAvailableWidget = (id: string, clientX: number, clientY: number) => {
     if (ids.includes(id)) return;
-    const layout = getPointerLayout(id);
-    flushSync(() => {
+    const layout = snapLayout(getPointerLayout(id, clientX, clientY));
+    const nextLayouts = placeWithDisplacement(id, layout, layouts);
+    if (!nextLayouts) return;
+    setIds((current) => (current.includes(id) ? current : [...current, id]));
+    setLayouts(nextLayouts);
+    setSelectedWidgetId(id);
+  };
+
+  const handleAvailableWidgetPointerDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+    widgetId: string,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    panelPointerDrag.current = { widgetId, pointerId: event.pointerId };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  React.useEffect(() => {
+    const pointIsInsideCanvas = (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return false;
+      const bounds = canvas.getBoundingClientRect();
+      return (
+        clientX >= bounds.left + canvas.clientLeft &&
+        clientX <= bounds.right - canvas.clientLeft &&
+        clientY >= bounds.top + canvas.clientTop &&
+        clientY <= bounds.bottom - canvas.clientTop
+      );
+    };
+    const handlePointerMove = (event: PointerEvent) => {
+      const drag = panelPointerDrag.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      if (!pointIsInsideCanvas(event.clientX, event.clientY)) {
+        setDropPreview(null);
+        return;
+      }
+      setDropPreview(
+        previewFor(
+          snapLayout(
+            getPointerLayout(drag.widgetId, event.clientX, event.clientY),
+          ),
+        ),
+      );
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      const drag = panelPointerDrag.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      panelPointerDrag.current = null;
       setDropPreview(null);
-      setWidgetRenderVersion((version) => version + 1);
-      setIds((current) => current.includes(id) ? current : [...current, id]);
-      setLayouts((current) => ({ ...current, [id]: layout }));
-    });
-  };
-
-  const onDragStart = (start: DragStart) => {
-    if (start.source.droppableId === "available") {
-      debugDnd("drag start", {
-        id: start.draggableId,
-        pointerX: pointerPosition.current.x,
-        pointerY: pointerPosition.current.y,
-      });
-      setDropPreview(getPointerLayout(start.draggableId));
-    }
-  };
-
-  const onDragUpdate = (update: DragUpdate) => {
-    if (
-      update.source.droppableId !== "available" ||
-      update.destination?.droppableId !== "canvas"
-    ) {
+      if (pointIsInsideCanvas(event.clientX, event.clientY)) {
+        commitAvailableWidget(drag.widgetId, event.clientX, event.clientY);
+      }
+    };
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (panelPointerDrag.current?.pointerId !== event.pointerId) return;
+      panelPointerDrag.current = null;
       setDropPreview(null);
-      return;
-    }
-    debugDnd("drag over canvas", {
-      id: update.draggableId,
-      pointerX: pointerPosition.current.x,
-      pointerY: pointerPosition.current.y,
-      destinationIndex: update.destination.index,
-    });
-    setDropPreview(getPointerLayout(update.draggableId));
-  };
+    };
 
-  const onDrop = (result: DropResult) => {
-    debugDnd("drag end", {
-      draggableId: result.draggableId,
-      source: result.source.droppableId,
-      destination: result.destination?.droppableId ?? null,
-      destinationIndex: result.destination?.index ?? null,
-    });
-    pointerDraggingWidgetId.current = null;
-    const previewForDrop =
-      dropPreview?.id === result.draggableId ? dropPreview : null;
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerup", handlePointerUp, true);
+    window.addEventListener("pointercancel", handlePointerCancel, true);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerup", handlePointerUp, true);
+      window.removeEventListener("pointercancel", handlePointerCancel, true);
+    };
+  }, [ids, layouts]);
+
+  const commitRect = (
+    id: string,
+    rect: Partial<WidgetLayout>,
+    allowSwap = false,
+  ) => {
+    const original = dragStartLayouts.current[id] || layouts[id];
+    const next = snapLayout({ ...layouts[id], ...rect });
+    const collisions = Object.values(layouts).filter(
+      (layout) => layout.id !== id && overlaps(next, layout),
+    );
     setDropPreview(null);
-    const canvasBounds = canvasRef.current?.getBoundingClientRect();
-    const isPointerOverCanvas = canvasBounds
-      ? pointerPosition.current.x >= canvasBounds.left &&
-        pointerPosition.current.x <= canvasBounds.right &&
-        pointerPosition.current.y >= canvasBounds.top &&
-        pointerPosition.current.y <= canvasBounds.bottom
-      : false;
-    if (!result.destination && !isPointerOverCanvas && !previewForDrop) return;
-    if (
-      result.source.droppableId === "available" &&
-      (result.destination?.droppableId === "canvas" ||
-        isPointerOverCanvas ||
-        previewForDrop)
-    ) {
-      const bounds = canvasBounds;
-      const dropX = bounds
-        ? pointerPosition.current.x - bounds.left
-        : CELL_ORIGIN;
-      const dropY = bounds
-        ? pointerPosition.current.y - bounds.top
-        : CELL_ORIGIN;
-      const finalLayout =
-        layoutAtDropPoint(result.draggableId, dropX, dropY, layouts);
-      debugDnd("drop received", {
-        id: result.draggableId,
-        pointerX: pointerPosition.current.x,
-        pointerY: pointerPosition.current.y,
-        canvasLeft: bounds?.left ?? null,
-        canvasTop: bounds?.top ?? null,
-        dropX,
-        dropY,
-        assignedX: finalLayout.x,
-        assignedY: finalLayout.y,
-        assignedWidth: finalLayout.width,
-        assignedHeight: finalLayout.height,
-        destinationIndex: result.destination?.index ?? -1,
-      });
-
-      flushSync(() => {
-        setWidgetRenderVersion((version) => version + 1);
-        setIds((current) => {
-          const next = [...current];
-          const insertIndex = result.destination?.index ?? next.length;
-          next.splice(insertIndex, 0, result.draggableId);
-          return next;
-        });
+    if (!collisions.length) {
+      setLayouts((current) => ({ ...current, [id]: next }));
+    } else if (allowSwap && collisions.length === 1 && original) {
+      const swap = swapDestination(next, original);
+      if (swap) {
         setLayouts((current) => ({
           ...current,
-          [result.draggableId]: current[result.draggableId] || finalLayout,
+          [id]: next,
+          [swap.widget.id]: swap.layout,
         }));
-        debugDnd("layout state committed", {
-          id: result.draggableId,
-          storedX: finalLayout.x,
-          storedY: finalLayout.y,
-          storedWidth: finalLayout.width,
-          storedHeight: finalLayout.height,
-        });
-      });
-    } else if (
-      result.source.droppableId === "canvas" &&
-      result.destination?.droppableId === "canvas"
-    ) {
-      const bounds = canvasRef.current?.getBoundingClientRect();
-      const dropX = bounds
-        ? pointerPosition.current.x - bounds.left
-        : CELL_ORIGIN;
-      const dropY = bounds
-        ? pointerPosition.current.y - bounds.top
-        : CELL_ORIGIN;
-      const movedLayout = layoutAtDropPoint(
-        result.draggableId,
-        dropX,
-        dropY,
-        layouts,
-      );
-      setWidgetRenderVersion((version) => version + 1);
-      setLayouts((current) => ({
-        ...current,
-        [result.draggableId]: movedLayout,
-      }));
-      setIds((current) => {
-        const next = [...current];
-        const [item] = next.splice(result.source.index, 1);
-        next.splice(result.destination!.index, 0, item);
-        return next;
-      });
+      } else {
+        setLayouts((current) => ({ ...current, [id]: original }));
+      }
+    } else {
+      if (original) {
+        setLayouts((current) => ({ ...current, [id]: original }));
+      }
     }
-  };
-
-  const updateLayout = (id: string, changes: Partial<WidgetLayout>) =>
-    setLayouts((current) => ({
-      ...current,
-      [id]: { ...current[id], ...changes },
-    }));
-  const tryUpdateLayout = (id: string, changes: Partial<WidgetLayout>) => {
-    setLayouts((current) => {
-      const candidate = { ...current[id], ...changes };
-      return canPlace(id, candidate, current)
-        ? { ...current, [id]: candidate }
-        : current;
+    setDragLayouts((current) => {
+      const nextLayouts = { ...current };
+      delete nextLayouts[id];
+      return nextLayouts;
     });
+    delete dragStartLayouts.current[id];
+    bumpWidget(id);
+    if (collisions.length === 1 && allowSwap) bumpWidget(collisions[0].id);
   };
   const removeWidget = (id: string) => {
     setIds((current) => current.filter((item) => item !== id));
@@ -1061,6 +1388,13 @@ export default function CustomizeProfileHomePage() {
       delete next[id];
       return next;
     });
+    setDragLayouts((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    delete dragStartLayouts.current[id];
+    setDropPreview(null);
     setSelectedWidgetId((current) => (current === id ? null : current));
   };
   const restoreDefaultComponents = () => {
@@ -1089,12 +1423,16 @@ export default function CustomizeProfileHomePage() {
       setError("Add at least one profile before saving.");
       return;
     }
+    const layout = ids.map((id) => layouts[id] || findFreeLayout(id, layouts));
+    if (layout.some((item, index) =>
+      layout.slice(index + 1).some((other) => overlaps(item, other)),
+    )) {
+      setError("Move overlapping components to separate grid areas before saving.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const layout = ids.map(
-        (id) => layouts[id] || findFreeLayout(id, layouts),
-      );
       const payload = {
         name: name.trim(),
         description: description.trim(),
@@ -1104,9 +1442,25 @@ export default function CustomizeProfileHomePage() {
       const response = homepageId
         ? await homepageApi.update(homepageId, payload)
         : await homepageApi.create(payload);
-      setNotice(response.data.message || "Home page saved successfully");
+      const savedHomepage = responseData(response);
+      if (!homepageId && savedHomepage?.id) setHomepageId(savedHomepage.id);
       setShareOpen(false);
-      window.setTimeout(() => router.push("/admin/customize-home"), 5000);
+      const destinationProfileId =
+        profileIdOverride && profileIds.includes(profileIdOverride)
+          ? profileIdOverride
+          : profileIds[0];
+      const destinationProfile = profiles.find(
+        (profile) => profile.id === destinationProfileId,
+      );
+      const destinationProfileName =
+        destinationProfile?.name || profileNameOverride || name.trim();
+      const profileParams = new URLSearchParams({
+        profileId: destinationProfileId,
+        profileLabel: destinationProfileName,
+      });
+      router.push(
+        `/profiles/${slugifyProfileName(destinationProfileName)}?${profileParams}`,
+      );
     } catch (saveError: any) {
       setError(
         saveError.response?.data?.error || "Unable to save the home page.",
@@ -1196,12 +1550,7 @@ export default function CustomizeProfileHomePage() {
           </Button>
         </div>
       </header>
-      <DragDropContext
-        onDragStart={onDragStart}
-        onDragUpdate={onDragUpdate}
-        onDragEnd={onDrop}
-      >
-        <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
           <aside className="hidden w-[68px] shrink-0 border-r bg-card text-muted-foreground md:flex md:flex-col">
             <div className="flex h-14 items-center justify-center border-b border-border text-xs font-bold text-foreground">
               DCT
@@ -1262,49 +1611,33 @@ export default function CustomizeProfileHomePage() {
                 />
               </div>
             </div>
-            <Droppable droppableId="available">
-              {(provided, snapshot) => (
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+              {availableWidgets.map((widget) => (
                 <div
-                  ref={provided.innerRef}
-                  {...provided.droppableProps}
-                  className={`min-h-0 flex-1 space-y-2 overflow-y-auto p-4 ${snapshot.isDraggingOver ? "bg-muted/50" : ""}`}
+                  key={widget.id}
+                  onPointerDown={(event) =>
+                    handleAvailableWidgetPointerDown(event, widget.id)
+                  }
+                  aria-label={`Add ${widget.title} to dashboard`}
+                  className="flex w-full touch-none cursor-grab items-start gap-2 rounded-md border border-border bg-card px-3 py-3 text-left text-sm hover:bg-muted/50 active:cursor-grabbing"
                 >
-                  {availableWidgets.map((widget, index) => (
-                    <Draggable key={widget.id} draggableId={widget.id} index={index}>
-                      {(drag, state) => (
-                        <div
-                          ref={drag.innerRef}
-                          {...drag.draggableProps}
-                          {...drag.dragHandleProps}
-                          aria-label={`Add ${widget.title} to dashboard`}
-                          style={{
-                            ...drag.draggableProps.style,
-                            ...(state.isDropAnimating ? { opacity: 0, transition: "none" } : {}),
-                          }}
-                          className={`flex w-full cursor-grab items-start gap-2 rounded-md border border-border bg-card px-3 py-3 text-left text-sm ${state.isDragging ? "ring-2 ring-primary" : "hover:bg-muted/50"}`}
-                        >
-                          <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0">
-                            <span className="block truncate">{widget.title}</span>
-                            {widget.category === "Reports" && (
-                              <span className="mt-1 block truncate text-xs text-muted-foreground">{widget.description}</span>
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </Draggable>
-                  ))}
-                  {provided.placeholder}
-                  {!availableWidgets.length && (
-                    <p className="py-8 text-center text-xs text-muted-foreground">
-                      No dashboard components found
-                    </p>
-                  )}
+                  <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0">
+                    <span className="block truncate">{widget.title}</span>
+                    {widget.category === "Reports" && (
+                      <span className="mt-1 block truncate text-xs text-muted-foreground">{widget.description}</span>
+                    )}
+                  </span>
                 </div>
+              ))}
+              {!availableWidgets.length && (
+                <p className="py-8 text-center text-xs text-muted-foreground">
+                  No dashboard components found
+                </p>
               )}
-            </Droppable>
+            </div>
           </aside>
-          <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-background p-3 md:p-4">
+          <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-background p-3 md:p-4">
             <div className="mx-auto w-full max-w-none">
               <div className="mb-3 flex items-center justify-between rounded-lg border bg-card px-3 py-2 shadow-sm">
                 <div>
@@ -1317,50 +1650,16 @@ export default function CustomizeProfileHomePage() {
                   {selectedWidgets.length} components
                 </span>
               </div>
-              <Droppable droppableId="canvas">
-                {(provided, snapshot) => (
                   <div
                     ref={(node) => {
-                      provided.innerRef(node);
                       canvasRef.current = node;
                     }}
-                    {...provided.droppableProps}
                     onClick={() => setSelectedWidgetId(null)}
-                    onDragOver={(event) => {
-                      if (Array.from(event.dataTransfer.types).includes("text/report-widget")) {
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "copy";
-                      }
-                    }}
-                    onDrop={(event) => {
-                      const reportId = event.dataTransfer.getData("text/report-widget");
-                      if (!reportId) return;
-                      event.preventDefault();
-                      pointerPosition.current = {
-                        x: event.clientX,
-                        y: event.clientY,
-                      };
-                      commitAvailableWidget(reportId);
-                    }}
-                    onPointerUp={() => {
-                      const widgetId = pointerDraggingWidgetId.current;
-                      if (widgetId) {
-                        pointerDraggingWidgetId.current = null;
-                        commitAvailableWidget(widgetId);
-                      }
-                    }}
-                    onMouseUp={() => {
-                      const widgetId = pointerDraggingWidgetId.current;
-                      if (widgetId) {
-                        pointerDraggingWidgetId.current = null;
-                        commitAvailableWidget(widgetId);
-                      }
-                    }}
-                    className={`relative w-full overflow-hidden rounded-lg border border-border bg-white ${snapshot.isDraggingOver ? "ring-2 ring-primary" : ""}`}
+                    className="relative w-full overflow-hidden rounded-lg border border-border bg-white"
                     style={{
+                      width: CANVAS_WIDTH,
+                      minWidth: CANVAS_WIDTH,
                       minHeight: canvasHeight,
-                      width: "100%",
-                      maxWidth: "100%",
                       backgroundImage: "linear-gradient(#f8fafc 1px, transparent 1px), linear-gradient(90deg, #f8fafc 1px, transparent 1px)",
                       backgroundSize: `${CELL_WIDTH + CELL_GAP}px ${CELL_HEIGHT + CELL_GAP}px`,
                       backgroundPosition: `${CELL_ORIGIN}px ${CELL_ORIGIN}px`,
@@ -1386,39 +1685,47 @@ export default function CustomizeProfileHomePage() {
                         />
                       ))}
                     </div>
-                    {dropPreview && snapshot.isDraggingOver && (
+                    {dropPreview && (
                       <div
                         className="pointer-events-none z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-500 bg-blue-100/70 text-xs font-semibold text-blue-700"
                         style={{
                           position: "absolute",
-                          left: dropPreview.x,
-                          top: dropPreview.y,
-                          width: dropPreview.width,
-                          height: dropPreview.height,
+                          left: dropPreview.layout.x,
+                          top: dropPreview.layout.y,
+                          width: dropPreview.layout.width,
+                          height: dropPreview.layout.height,
                         }}
                       >
-                        Drop component here
+                        {dropPreview.swap
+                          ? "Swap positions"
+                          : dropPreview.valid
+                            ? "Drop component here"
+                            : null}
                       </div>
                     )}
                     {selectedWidgets.map((widget) => {
                       const layout =
                         layouts[widget.id] ||
                         findFreeLayout(widget.id, layouts);
+                      const dragLayout = dragLayouts[widget.id];
                       return (
                         <Rnd
-                          key={`${widget.id}-${widgetRenderVersion}`}
+                          key={`${widget.id}-${widgetRenderVersion}-${widgetVersions[widget.id] ?? 0}`}
+                          data-widget-id={widget.id}
                           bounds="parent"
+                          cancel=".dashboard-widget-action"
                           style={{
                             zIndex: selectedWidgetId === widget.id ? 2 : 1,
-                            maxWidth: `calc(100% - ${layout.x + CELL_ORIGIN}px)`,
                             boxSizing: "border-box",
+                            opacity: 1,
                           }}
                           size={{ width: layout.width, height: layout.height }}
-                          position={{ x: layout.x, y: layout.y }}
+                          position={{
+                            x: dragLayout?.x ?? layout.x,
+                            y: dragLayout?.y ?? layout.y,
+                          }}
                           minWidth={MIN_WIDGET_WIDTH}
                           minHeight={MIN_WIDGET_HEIGHT}
-                          grid={[GRID_SIZE, GRID_SIZE]}
-                          resizeGrid={[GRID_SIZE, GRID_SIZE]}
                           enableResizing={
                             selectedWidgetId === widget.id
                               ? {
@@ -1434,38 +1741,52 @@ export default function CustomizeProfileHomePage() {
                               : false
                           }
                           resizeHandleStyles={resizeHandles}
-                          onDragStart={() => setSelectedWidgetId(widget.id)}
-                          onDrag={(_, data) =>
-                            tryUpdateLayout(widget.id, { x: data.x, y: data.y })
-                          }
+                          onDragStart={() => {
+                            dragStartLayouts.current[widget.id] = layout;
+                            setDragLayouts((current) => {
+                              const next = { ...current };
+                              delete next[widget.id];
+                              return next;
+                            });
+                            setSelectedWidgetId(widget.id);
+                          }}
+                          onDrag={(_, data) => {
+                            const candidate = {
+                              ...layouts[widget.id],
+                              x: data.x,
+                              y: data.y,
+                            };
+                            setDropPreview(previewFor(snapLayout(candidate)));
+                            setDragLayouts((current) => ({
+                              ...current,
+                              [widget.id]: candidate,
+                            }));
+                          }}
                           onDragStop={(_, data) =>
-                            tryUpdateLayout(widget.id, {
-                              x: snapToSlot(data.x, GRID_SLOT_WIDTH),
-                              y: snapToSlot(data.y, GRID_SLOT_HEIGHT),
-                            })
+                            commitRect(widget.id, { x: data.x, y: data.y }, true)
                           }
-                          onResize={(_, __, ref, ___, position) =>
-                            tryUpdateLayout(widget.id, {
-                              width: ref.offsetWidth,
-                              height: ref.offsetHeight,
+                          onResize={(_, __, ref, ___, position) => {
+                            const candidate = {
+                              id: widget.id,
                               x: position.x,
                               y: position.y,
-                            })
-                          }
+                              width: ref.offsetWidth,
+                              height: ref.offsetHeight,
+                            };
+                            setDropPreview(previewFor(snapLayout(candidate)));
+                            if (canPlace(widget.id, candidate, layouts)) {
+                              setLayouts((current) => ({
+                                ...current,
+                                [widget.id]: candidate,
+                              }));
+                            }
+                          }}
                           onResizeStop={(_, __, ref, ___, position) =>
-                            tryUpdateLayout(widget.id, {
-                              width: Math.max(
-                                MIN_WIDGET_WIDTH,
-                                Math.round((ref.offsetWidth + CELL_GAP) / (CELL_WIDTH + CELL_GAP)) * CELL_WIDTH +
-                                  (Math.max(1, Math.round((ref.offsetWidth + CELL_GAP) / (CELL_WIDTH + CELL_GAP))) - 1) * CELL_GAP,
-                              ),
-                              height: Math.max(
-                                MIN_WIDGET_HEIGHT,
-                                Math.round((ref.offsetHeight + CELL_GAP) / (CELL_HEIGHT + CELL_GAP)) * CELL_HEIGHT +
-                                  (Math.max(1, Math.round((ref.offsetHeight + CELL_GAP) / (CELL_HEIGHT + CELL_GAP))) - 1) * CELL_GAP,
-                              ),
-                              x: snapToSlot(position.x, GRID_SLOT_WIDTH),
-                              y: snapToSlot(position.y, GRID_SLOT_HEIGHT),
+                            commitRect(widget.id, {
+                              x: position.x,
+                              y: position.y,
+                              width: ref.offsetWidth,
+                              height: ref.offsetHeight,
                             })
                           }
                         >
@@ -1480,7 +1801,7 @@ export default function CustomizeProfileHomePage() {
                               <div className="flex min-w-0 items-center gap-2">
                                 <GripVertical className="h-3 w-3 cursor-move text-muted-foreground" />
                                 <div className="min-w-0">
-                                  <h3 className="truncate text-xs font-semibold">
+                                  <h3 className="truncate text-xs font-semibold text-foreground opacity-100">
                                     {widget.title}
                                   </h3>
                                   <p className="truncate text-[11px] text-muted-foreground">
@@ -1491,19 +1812,22 @@ export default function CustomizeProfileHomePage() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-6 w-6"
-                                onClick={() => removeWidget(widget.id)}
+                                className="dashboard-widget-action h-6 w-6"
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  removeWidget(widget.id);
+                                }}
                                 aria-label={`Close ${widget.title}`}
                               >
                                 <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
                               </Button>
                             </div>
-                            <WidgetContent widget={widget} />
+                            <WidgetContent widget={widget} previewData={previewData} />
                           </section>
                         </Rnd>
                       );
                     })}
-                    {provided.placeholder}
                     {!selectedWidgets.length && (
                       <div
                         className="pointer-events-none z-20 flex items-center justify-center p-6"
@@ -1523,12 +1847,9 @@ export default function CustomizeProfileHomePage() {
                       </div>
                     )}
                   </div>
-                )}
-              </Droppable>
             </div>
           </main>
         </div>
-      </DragDropContext>
       {error && (
         <div className="fixed bottom-5 left-1/2 z-[95] -translate-x-1/2 rounded-md bg-destructive px-4 py-3 text-sm text-destructive-foreground shadow-md">
           {error}

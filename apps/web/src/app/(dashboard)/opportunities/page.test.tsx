@@ -87,6 +87,8 @@ describe("OpportunitiesPage GRE snapshot", () => {
   it("shows current GRE data in both pipeline and list views after a fresh load", async () => {
     render(<OpportunitiesPage />);
 
+    await screen.findByRole("heading", { name: "Opportunities" });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /pipeline/i }), { button: 0, ctrlKey: false });
     expect(await screen.findByText(/GRE GRE-2026-000002/)).toBeInTheDocument();
     fireEvent.mouseDown(screen.getByRole("tab", { name: /list/i }), { button: 0, ctrlKey: false });
 

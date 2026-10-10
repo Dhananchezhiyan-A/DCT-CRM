@@ -10,7 +10,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
 
 import { leadApi, siteVisitApi, opportunityApi, activityApi, taskApi, followUpApi, objectManagerApi, projectApi, unitApi, quotationApi, bookingApi } from "@/lib/api";
-import { getCurrentCoordinates } from "@/lib/geolocation";
+import { getCurrentCoordinates, getGeolocationPermission, getLocationSettingsInstructions } from "@/lib/geolocation";
 
 import LayoutDrivenForm from "@/components/admin/layout-driven-form";
 
@@ -143,7 +143,7 @@ interface LeadData {
   notes?: string;
   owner?: { id: string; firstName: string; lastName: string };
   creator?: { id: string; firstName: string; lastName: string };
-  project?: { id: string; name: string };
+  project?: { id: string; name: string; allowedRadiusMeters?: number };
   projectId?: string | null;
   siteVisits?: any[];
   opportunities?: any[];
@@ -272,7 +272,12 @@ export default function LeadDetailPage() {
   const [cancelSvReason, setCancelSvReason] = React.useState("");
 
   const [completeSvDialogOpen, setCompleteSvDialogOpen] = React.useState(false);
-  const [locationConsentOpen, setLocationConsentOpen] = React.useState(false);
+  const [locationAccessDialogOpen, setLocationAccessDialogOpen] = React.useState(false);
+  const [locationDialogState, setLocationDialogState] = React.useState<"denied" | "unavailable" | "outside" | "inaccurate" | "error" | null>(null);
+  const [locationFailure, setLocationFailure] = React.useState("");
+  const [locationInstructions, setLocationInstructions] = React.useState("");
+  const [isCheckingLocationPermission, setIsCheckingLocationPermission] = React.useState(false);
+  const [outsideLocation, setOutsideLocation] = React.useState<{ distanceMeters: number; radiusMeters: number; projectName: string } | null>(null);
   const [completeSvFeedback, setCompleteSvFeedback] = React.useState("");
   const [completeSvNotes, setCompleteSvNotes] = React.useState("");
   const [completeSvTime, setCompleteSvTime] = React.useState("");
@@ -292,6 +297,7 @@ export default function LeadDetailPage() {
   const [oppUnitsError, setOppUnitsError] = React.useState<string | null>(null);
 
   const [createQuoteDialogOpen, setCreateQuoteDialogOpen] = React.useState(false);
+  const [quoteConfirmationOpen, setQuoteConfirmationOpen] = React.useState(false);
   const [quoteDescription, setQuoteDescription] = React.useState("");
   const [quoteUnitPrice, setQuoteUnitPrice] = React.useState("");
 
@@ -887,7 +893,7 @@ export default function LeadDetailPage() {
     }
   };
 
-  const handleCompleteSiteVisit = () => {
+  const handleCompleteSiteVisit = async () => {
     const activeSv = getActiveSiteVisit();
     if (!activeSv) {
       toast({ title: "Error", description: "No scheduled site visit found", variant: "destructive" as any });
@@ -897,50 +903,91 @@ export default function LeadDetailPage() {
       toast({ title: "Validation", description: "Completion time, customer feedback, and notes are required", variant: "destructive" as any });
       return;
     }
-    setLocationConsentOpen(true);
+    setLocationFailure("");
+    setOutsideLocation(null);
+    await requestAndVerifySiteVisitLocation(activeSv.id);
   };
 
-  const handleConfirmLocationAndComplete = async () => {
-    const activeSv = getActiveSiteVisit();
-    if (!activeSv) {
-      toast({ title: "Error", description: "No scheduled site visit found", variant: "destructive" as any });
-      return;
-    }
-    if (!completeSvTime || !completeSvFeedback.trim() || !completeSvNotes.trim()) {
-      toast({ title: "Validation", description: "Completion time, customer feedback, and notes are required", variant: "destructive" as any });
-      return;
-    }
+  const requestAndVerifySiteVisitLocation = async (siteVisitId: string) => {
     setIsActionLoading(true);
     try {
       const coordinates = await getCurrentCoordinates();
-      const response = await siteVisitApi.complete(activeSv.id, {
+      await siteVisitApi.verifyLocation(siteVisitId, coordinates);
+      const response = await siteVisitApi.complete(siteVisitId, {
         completedAt: crmLocalDateTimeToDate(completeSvTime.split("T")[0], completeSvTime.split("T")[1]).toISOString(),
         customerFeedback: completeSvFeedback.trim(),
         completionNotes: completeSvNotes.trim(),
         ...coordinates,
       });
       const result = response.data.data;
+      setLocationAccessDialogOpen(false);
+      setLocationInstructions("");
       setLead((current) => current ? {
         ...current,
+        ...(result.lead || {}),
         status: result.leadStatus || current.status,
         siteVisits: current.siteVisits?.map((visit: any) =>
-          visit.id === activeSv.id ? { ...visit, ...result.siteVisit } : visit,
+          visit.id === siteVisitId ? { ...visit, ...result.siteVisit } : visit,
         ),
       } : current);
-      setLocationConsentOpen(false);
-      toast({ title: "Success", description: "Site visit marked as happened" });
+      setLocationDialogState(null);
+      setOutsideLocation(null);
+      setLocationFailure("");
+      toast(result.salesHandoff?.pendingReason
+       ? { title: "Site visit completed; Sales assignment pending", description: result.salesHandoff.pendingReason, variant: "destructive" as any }
+       : { title: "Success", description: "Site visit marked as happened" });
       setCompleteSvDialogOpen(false);
       setCompleteSvFeedback("");
       setCompleteSvNotes("");
       setCompleteSvTime("");
       setCompleteSvRating("");
-      if (activeTab === "audit-history") {
-        fetchAuditHistory(1);
-      }
+      if (activeTab === "audit-history") fetchAuditHistory(1);
     } catch (err: any) {
-      toast({ title: "Error", description: err?.response?.data?.error || err?.message || "Failed to complete site visit", variant: "destructive" as any });
+      const code = err?.response?.data?.code;
+      setLocationFailure(err?.response?.data?.error || err?.message || "Failed to verify your location");
+      const failureData = err?.response?.data?.data;
+      if (code === "OUTSIDE_RADIUS" && Number.isFinite(failureData?.distanceMeters)) {
+        setOutsideLocation({
+          distanceMeters: failureData.distanceMeters,
+          radiusMeters: failureData.radiusMeters,
+          projectName: failureData.projectName || "the project",
+        });
+      } else {
+        setOutsideLocation(null);
+      }
+      const permissionBlocked = err?.code === 1;
+      const locationUnavailable = err?.code === 2;
+      setLocationAccessDialogOpen(permissionBlocked || locationUnavailable);
+      if (permissionBlocked) {
+        setLocationInstructions(`The browser still reports Location as blocked. This page cannot change that setting. ${getLocationSettingsInstructions(navigator.userAgent)}`);
+      } else if (locationUnavailable) {
+        setLocationInstructions("Browser permission may be allowed, but the device did not provide a location. Turn on device Location Services and allow your browser to use location, then retry.");
+      }
+      setLocationDialogState(
+        permissionBlocked ? "denied"
+          : locationUnavailable ? "unavailable"
+          : code === "OUTSIDE_RADIUS" ? "outside"
+            : code === "INACCURATE" ? "inaccurate"
+              : "error",
+      );
     } finally {
       setIsActionLoading(false);
+    }
+  };
+
+  const handleAllowLocation = async () => {
+    setIsCheckingLocationPermission(true);
+    try {
+      const permission = await getGeolocationPermission();
+      if (permission === "granted") {
+        setLocationInstructions("The browser confirms Location is allowed. Close this message and select Complete Site Visit to get a fresh position. If GPS is unavailable, enable Location Services in your device settings.");
+      } else if (permission === "prompt") {
+        setLocationInstructions("Location permission is not decided yet. Close this message and select Complete Site Visit to open the browser's normal permission prompt.");
+      } else {
+        setLocationInstructions(`The browser currently reports Location as blocked. This page cannot change that setting. ${getLocationSettingsInstructions(navigator.userAgent)}`);
+      }
+    } finally {
+      setIsCheckingLocationPermission(false);
     }
   };
 
@@ -967,7 +1014,7 @@ export default function LeadDetailPage() {
       setLead((current) => current ? {
         ...current,
         ...(result?.lead || {}),
-        status: result?.lead?.status || "BOOKED",
+        status: result?.lead?.status || current.status,
         project: result?.opportunity?.project || current.project,
         opportunities: result?.opportunity
           ? [result.opportunity, ...(current.opportunities || []).filter((item: any) => item.id !== result.opportunity.id)]
@@ -975,7 +1022,7 @@ export default function LeadDetailPage() {
       } : current);
       toast({
         title: "Lead converted",
-        description: `${oppNumber ? `${oppNumber} created` : "Opportunity created"}${ownerName ? ` — owner: ${ownerName}` : ""}${fallbackNote}. Lead status: BOOKED`,
+        description: `${oppNumber ? `${oppNumber} created` : "Opportunity created"}${ownerName ? ` — owner: ${ownerName}` : ""}${fallbackNote}. Lead remains at Site Visit Completed until booking.`,
       });
       setCreateOppDialogOpen(false);
       setOppName("");
@@ -984,6 +1031,7 @@ export default function LeadDetailPage() {
       setOppProjectId("");
       setOppUnitId("");
       setOppUnits([]);
+      router.push("/opportunities");
     } catch (err: any) {
       toast({ title: "Error", description: err?.response?.data?.error || "Failed to create opportunity", variant: "destructive" as any });
     } finally {
@@ -991,30 +1039,51 @@ export default function LeadDetailPage() {
     }
   };
 
-  const handleCreateQuotation = async () => {
+  const handleCreateQuotation = () => {
     if (!quoteDescription.trim() || !quoteUnitPrice) {
       toast({ title: "Validation", description: "Description and unit price are required", variant: "destructive" as any });
       return;
     }
+    setCreateQuoteDialogOpen(false);
+    setQuoteConfirmationOpen(true);
+  };
+
+  const handleConfirmCreateQuotation = async () => {
     setIsActionLoading(true);
     try {
-      const oppId = lead?.opportunities?.[0]?.id;
-      await quotationApi.create({
+      const opportunity = lead?.opportunities?.[0];
+      const response = await quotationApi.create({
         leadId,
-        opportunityId: oppId,
-        projectId: lead?.opportunities?.[0]?.projectId || lead?.siteVisits?.find((visit: any) => visit.status === "COMPLETED")?.projectId || lead?.project?.id,
+        opportunityId: opportunity?.id,
+        projectId: opportunity?.projectId || lead?.siteVisits?.find((visit: any) => visit.status === "COMPLETED")?.projectId || lead?.project?.id,
         items: [
           {
+            ...(opportunity?.unitId ? { unitId: opportunity.unitId } : {}),
             description: quoteDescription.trim(),
             quantity: 1,
             unitPrice: Number(quoteUnitPrice),
           },
         ],
       });
-      toast({ title: "Success", description: "Quotation created" });
-      setCreateQuoteDialogOpen(false);
+      const quotation = response.data.data;
+      if (!quotation?.id) throw new Error("Quotation was created but no ID was returned");
+      setQuoteConfirmationOpen(false);
       setQuoteDescription("");
       setQuoteUnitPrice("");
+      try {
+        const pdfResponse = await quotationApi.downloadPdf(quotation.id);
+        const url = URL.createObjectURL(new Blob([pdfResponse.data], { type: "application/pdf" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${quotation.number || "quotation"}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast({ title: "Quotation downloaded", description: `${quotation.number || "Quotation"} was saved to your downloads.` });
+      } catch (downloadError: any) {
+        toast({ title: "Quotation created", description: downloadError?.response?.data?.error || "The PDF could not be downloaded. You can retry from the Quotations page.", variant: "destructive" as any });
+      }
     } catch (err: any) {
       toast({ title: "Error", description: err?.response?.data?.error || "Failed to create quotation", variant: "destructive" as any });
     } finally {
@@ -1054,15 +1123,17 @@ export default function LeadDetailPage() {
   const getWorkflowActions = (): { label: string; onClick: () => void; variant?: "default" | "outline" | "destructive" | "secondary" }[] => {
     const actions: { label: string; onClick: () => void; variant?: "default" | "outline" | "destructive" | "secondary" }[] = [];
 
-    const canAct = canEditLead;
-    if (!canAct) return actions;
+    const prof = profile?.name || "";
+    const canManageSiteVisits = prof === "SVC" && (
+      hasEffectivePermission("SITE_VISIT_CREATE") || hasEffectivePermission("SITE_VISIT_UPDATE")
+    );
+    if (!canEditLead && !canManageSiteVisits) return actions;
 
     const visits = lead?.siteVisits || [];
     const activeSiteVisit =
       visits.find((sv: any) => String(sv.status).toUpperCase() === "SCHEDULED") || null;
     const latestSiteVisit = activeSiteVisit || visits[0] || null;
 
-    const prof = profile?.name || "";
     const adminLike = isAdmin || isSuperAdmin || prof === "CRM Admin" || prof === "Manager";
 
     if (status === "INCOMING" && (prof === "Presales" || prof === "Sales Executive" || adminLike)) {
@@ -1152,6 +1223,7 @@ export default function LeadDetailPage() {
     previousOwnerName: "Previous Owner",
     newOwnerName: "New Owner",
     changedByName: "Changed By",
+    roundRobinName: "Round Robin",
     assignmentSource: "Assignment Source",
     assignedTo: "Assigned To",
     cancellationReason: "Cancellation Reason",
@@ -1410,13 +1482,15 @@ export default function LeadDetailPage() {
               {action.label}
             </Button>
           ))}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setFollowUpDialogOpen(true)}
-          >
-            <Clock className="h-4 w-4 mr-1" />Follow-up
-          </Button>
+          {hasEffectivePermission("FOLLOW_UP_CREATE") && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFollowUpDialogOpen(true)}
+            >
+              <Clock className="h-4 w-4 mr-1" />Follow-up
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -2008,7 +2082,7 @@ export default function LeadDetailPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Push Lead to SVC?</DialogTitle>
-            <DialogDescription>This lead will be moved to the Site Visit Coordinator workflow.</DialogDescription>
+            <DialogDescription>This lead will be assigned to a Site Visit Coordinator via Round Robin.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="rounded-md border bg-muted/30 p-3 text-sm">
@@ -2458,11 +2532,11 @@ export default function LeadDetailPage() {
       </Dialog>
 
       {/* Complete Site Visit Dialog */}
-      <Dialog open={completeSvDialogOpen} onOpenChange={setCompleteSvDialogOpen}>
+      <Dialog open={completeSvDialogOpen && !locationAccessDialogOpen} onOpenChange={setCompleteSvDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Complete Site Visit</DialogTitle>
-            <DialogDescription>Marks the site visit as happened. Lead moves to Site Visit Happened. Location access is required, and you must be within 100 meters of the project.</DialogDescription>
+            <DialogDescription>Marks the site visit as happened. Lead moves to Site Visit Happened. Location access is required, and you must be within {getActiveSiteVisit()?.project?.allowedRadiusMeters || lead?.project?.allowedRadiusMeters || 100} meters of the project. To avoid repeated prompts, choose Allow while visiting this site or set Location to Allow in your browser settings.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
@@ -2482,28 +2556,75 @@ export default function LeadDetailPage() {
               <Label htmlFor="complete-notes">Notes *</Label>
               <Textarea id="complete-notes" value={completeSvNotes} onChange={(e) => setCompleteSvNotes(e.target.value)} />
             </div>
+            {locationDialogState && locationDialogState !== "denied" && (
+              <div role="alert" className="flex flex-col gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between">
+                <p className="min-w-0">
+                  <span aria-hidden="true">⚠ </span>
+                  {locationDialogState === "outside"
+                    ? locationFailure || "Site Visit cannot be completed. You are not at the required location."
+                    : locationFailure}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleCompleteSiteVisit()}
+                  disabled={isActionLoading}
+                  className="shrink-0 border-red-300 text-red-800 hover:bg-red-100"
+                >
+                  {isActionLoading ? "Checking..." : "Check Location Again"}
+                </Button>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCompleteSvDialogOpen(false)} disabled={isActionLoading}>Back</Button>
             <Button onClick={handleCompleteSiteVisit} disabled={isActionLoading || !completeSvTime || !completeSvFeedback.trim() || !completeSvNotes.trim()}>
-              {isActionLoading ? "Completing..." : "Complete Site Visit"}
+              {isActionLoading ? "Checking Location..." : "Complete Site Visit"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={locationConsentOpen} onOpenChange={(open) => !isActionLoading && setLocationConsentOpen(open)}>
-        <DialogContent>
+      <Dialog
+        open={locationAccessDialogOpen}
+        onOpenChange={(open) => {
+          if (isActionLoading) return;
+          setLocationAccessDialogOpen(open);
+          if (!open) {
+            setLocationDialogState(null);
+            setLocationInstructions("");
+          }
+        }}
+      >
+        <DialogContent showClose={false}>
           <DialogHeader>
-            <DialogTitle>Allow location access</DialogTitle>
+            <DialogTitle>Location Access Required</DialogTitle>
             <DialogDescription>
-              Your device location will be checked once against {getActiveSiteVisit()?.project?.name || getActiveSiteVisit()?.projectName || lead?.project?.name || "the site-visit project"}. The visit only completes if you are within 100 meters. Choose Allow Location Access to continue. To see the browser permission prompt, set this site&apos;s Location permission to Ask in the site information panel.
+              {locationDialogState === "unavailable"
+                ? "Your device could not provide a location. Enable device Location Services and allow your browser to access location to complete this site visit."
+                : "Your location access is blocked. Enable location permission in your browser settings to complete this site visit."}
             </DialogDescription>
           </DialogHeader>
+          {locationInstructions && (
+            <p role="status" className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+              {locationInstructions}
+            </p>
+          )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setLocationConsentOpen(false)} disabled={isActionLoading}>Cancel</Button>
-            <Button onClick={handleConfirmLocationAndComplete} disabled={isActionLoading}>
-              {isActionLoading ? "Checking location..." : "Allow Location Access"}
+            <Button variant="outline" onClick={() => void handleAllowLocation()} disabled={isActionLoading || isCheckingLocationPermission}>
+              {isCheckingLocationPermission ? "Checking Permission..." : "Allow Location"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLocationAccessDialogOpen(false);
+                setLocationDialogState(null);
+                setLocationInstructions("");
+              }}
+              disabled={isActionLoading || isCheckingLocationPermission}
+            >
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2674,6 +2795,26 @@ export default function LeadDetailPage() {
             <Button variant="outline" onClick={() => setCreateQuoteDialogOpen(false)} disabled={isActionLoading}>Cancel</Button>
             <Button onClick={handleCreateQuotation} disabled={isActionLoading}>
               {isActionLoading ? "Creating..." : "Create Quotation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={quoteConfirmationOpen} onOpenChange={setQuoteConfirmationOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm quotation</DialogTitle>
+            <DialogDescription>
+              Generate the property investment quotation using the Standard 1-Month 10-90 payment plan, then download the PDF to this device?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setQuoteConfirmationOpen(false);
+              setCreateQuoteDialogOpen(true);
+            }} disabled={isActionLoading}>Back</Button>
+            <Button onClick={handleConfirmCreateQuotation} disabled={isActionLoading}>
+              {isActionLoading ? "Generating..." : "Confirm & Download"}
             </Button>
           </DialogFooter>
         </DialogContent>
