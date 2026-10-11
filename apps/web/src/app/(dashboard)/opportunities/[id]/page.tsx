@@ -25,6 +25,8 @@ import Link from "next/link";
 import { useToast } from "@/hooks/use-toast";
 
 import { opportunityApi } from "@/lib/api";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
+import { RecordSummary } from "@/components/crm/record-summary";
 import { mapOpportunity } from "@/lib/opportunity";
 import type { OpportunityView } from "@/lib/opportunity";
 import { useAuth } from "@/contexts/auth-context";
@@ -116,19 +118,15 @@ export default function OpportunityDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/opportunities">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-          </Button>
-          <div>
-            <h1 className="text-xl font-bold">{opportunity.title}</h1>
-            <p className="text-muted-foreground">{opportunity.assignedTo}</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
+      <RecordPageHeader
+        objectLabel="Opportunity"
+        title={opportunity.title}
+        subtitle={opportunity.assignedTo}
+        backHref="/opportunities"
+        icon={<TrendingUp className="h-5 w-5" aria-hidden="true" />}
+        badges={<Badge className={cn("capitalize", stageColors[opportunity.stage])}>{opportunity.stage.replace("-", " ")}</Badge>}
+        actions={
+          <>
           {hasEffectivePermission("OPPORTUNITY_DELETE") && (
             <Button
               variant="destructive"
@@ -146,67 +144,16 @@ export default function OpportunityDetailPage() {
               Delete
             </Button>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <DollarSign className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Value</p>
-                <p className="text-lg font-bold">{formatCurrency(opportunity.value)}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <TrendingUp className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Stage</p>
-                <Badge className={cn("capitalize", stageColors[opportunity.stage])}>
-                  {opportunity.stage.replace("-", " ")}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <CheckSquare className="h-5 w-5 text-orange-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Probability</p>
-                <p className="text-lg font-bold">{opportunity.probability}%</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Close Date</p>
-                <p className="text-lg font-bold">
-                  {formatDate(opportunity.closeDate)}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <RecordSummary items={[
+        { label: "Value", value: formatCurrency(opportunity.value) },
+        { label: "Stage", value: opportunity.stage.replace("-", " ") },
+        { label: "Probability", value: `${opportunity.probability}%` },
+        { label: "Close Date", value: formatDate(opportunity.closeDate) },
+      ]} />
 
       <Card>
         <CardHeader>

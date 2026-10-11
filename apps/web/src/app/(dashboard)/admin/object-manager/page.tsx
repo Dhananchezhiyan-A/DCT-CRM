@@ -125,7 +125,7 @@ export default function ObjectManagerPage() {
         <div>
           <h1 className="text-xl font-semibold">Object Manager</h1>
           <p className="text-muted-foreground">
-            Create and manage custom objects for your CRM
+            View and manage all CRM objects, including Enquiries, Leads, Site Visits, and more.
           </p>
         </div>
         <Button onClick={() => setShowCreateDialog(true)}>
@@ -187,6 +187,13 @@ export default function ObjectManagerPage() {
             </CardContent>
           </Card>
         ))}
+        {objects.length === 0 && (
+          <Card className="md:col-span-2 lg:col-span-3">
+            <CardContent className="py-10 text-center text-sm text-muted-foreground">
+              No CRM objects are configured for this tenant.
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>

@@ -5,6 +5,8 @@ node_modules/
 
 # Build outputs
 .next/
+apps/cp-portal/.next-cp-portal/
+apps/cp-portal/.next-cp-portal-dev/
 out/
 dist/
 build/

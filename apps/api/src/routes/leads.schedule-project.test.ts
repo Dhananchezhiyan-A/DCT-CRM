@@ -250,7 +250,7 @@ describe('POST /api/leads Round Robin assignment', () => {
     database.leadFindUnique.mockResolvedValue(createdLead);
     database.projectFindFirst.mockResolvedValue({ id: 'project-a' });
     rrQueue.findApplicableRRQueue.mockResolvedValue({ id: 'queue-a' });
-    rrQueue.assignLeadInTransaction.mockRejectedValue(new Error('NO_ELIGIBLE_RR_MEMBER:Pre Sales'));
+    rrQueue.assignLeadInTransaction.mockRejectedValue(new Error('NO_ELIGIBLE_USER'));
 
     const app = express();
     app.use(express.json());
@@ -277,9 +277,9 @@ describe('POST /api/leads Round Robin assignment', () => {
     expect(database.leadCreate).toHaveBeenCalledOnce();
     expect(body).toMatchObject({
       success: true,
-      warning: expect.stringContaining('No eligible Pre Sales user'),
       data: {
         id: 'lead-new',
+        assignmentWarning: expect.stringContaining('no eligible Sales user'),
       },
     });
   });

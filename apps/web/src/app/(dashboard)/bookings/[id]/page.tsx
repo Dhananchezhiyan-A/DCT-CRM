@@ -9,6 +9,9 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { bookingApi } from "@/lib/api";
+import StickyNotesCard from "@/components/crm/sticky-notes-card";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
+import { RecordSummary } from "@/components/crm/record-summary";
 
 import { useToast } from "@/hooks/use-toast";
 
@@ -164,19 +167,15 @@ export default function BookingDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/bookings">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-          </Button>
-          <div>
-            <h1 className="text-xl font-semibold">{booking.bookingNumber}</h1>
-            <p className="text-muted-foreground">Booking for {booking.leadName}</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
+      <RecordPageHeader
+        objectLabel="Booking"
+        title={booking.bookingNumber}
+        subtitle={`For ${booking.leadName}`}
+        backHref="/bookings"
+        icon={<Calendar className="h-5 w-5" aria-hidden="true" />}
+        badges={<Badge variant={STATUS_VARIANT[booking.status] || "default"}>{STATUS_LABEL[booking.status] || booking.status}</Badge>}
+        actions={
+          <>
           {booking.status === "pending" && (
             <>
               <Button onClick={handleConfirm}>
@@ -189,67 +188,16 @@ export default function BookingDetailPage() {
               </Button>
             </>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <DollarSign className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Amount</p>
-                <p className="text-lg font-bold">{formatCurrency(booking.amount)}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <CheckCircle2 className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Status</p>
-                <Badge variant={STATUS_VARIANT[booking.status] || "default"}>
-                  {STATUS_LABEL[booking.status] || booking.status}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <Home className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Unit</p>
-                <p className="text-sm font-medium">{booking.unitNumber}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-orange-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Booking Date</p>
-                <p className="text-sm font-medium">
-                  {formatDate(booking.bookingDate)}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <RecordSummary items={[
+        { label: "Amount", value: formatCurrency(booking.amount) },
+        { label: "Status", value: STATUS_LABEL[booking.status] || booking.status },
+        { label: "Unit", value: booking.unitNumber },
+        { label: "Booking Date", value: formatDate(booking.bookingDate) },
+      ]} />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
@@ -361,12 +309,7 @@ export default function BookingDetailPage() {
         </TabsContent>
 
         <TabsContent value="notes">
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              <StickyNote className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p>No notes added</p>
-            </CardContent>
-          </Card>
+          <StickyNotesCard recordId={booking.id} />
         </TabsContent>
       </Tabs>
     </div>

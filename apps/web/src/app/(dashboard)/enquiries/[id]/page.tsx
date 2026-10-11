@@ -7,6 +7,7 @@ import { ArrowLeft, Inbox } from "lucide-react";
 import { enquiryApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
 
 type EnquiryDetail = {
   id: string;
@@ -113,15 +114,14 @@ export default function EnquiryDetailPage() {
   ] as const;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex flex-wrap items-center gap-4">
-        <Button variant="outline" size="icon" asChild><Link href={leadPath} aria-label="Back to Lead"><ArrowLeft className="h-4 w-4" /></Link></Button>
-        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary"><Inbox className="h-6 w-6" /></div>
-        <div>
-          <p className="text-sm text-muted-foreground">Enquiry</p>
-          <h1 className="text-xl font-semibold">{enquiry.enquiryNumber}</h1>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <RecordPageHeader
+        objectLabel="Enquiry"
+        title={enquiry.enquiryNumber}
+        subtitle={`Lead: ${enquiry.lead.leadNumber || `${enquiry.lead.firstName || ""} ${enquiry.lead.lastName}`.trim()}`}
+        backHref={leadPath}
+        icon={<Inbox className="h-5 w-5" aria-hidden="true" />}
+      />
       <Card>
         <CardHeader><CardTitle>Details</CardTitle></CardHeader>
         <CardContent>

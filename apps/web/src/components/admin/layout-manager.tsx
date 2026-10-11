@@ -91,7 +91,14 @@ export default function LayoutManager({ objectName, fields }: LayoutManagerProps
       await objectManagerApi.updateLayout(objectName, editingLayout.id, {
         sections,
       });
-      toast({ title: "Success", description: "Layout saved" });
+      toast({
+        title: "Success",
+        description: objectName === "Lead"
+          ? editingLayout.isDefault
+            ? "Layout saved and applied to Lead record pages."
+            : "Layout saved. Set it as Default for it to appear on Lead record pages."
+          : "Layout saved.",
+      });
       setEditingLayout(null);
       await loadLayouts();
     } catch {
@@ -174,7 +181,7 @@ export default function LayoutManager({ objectName, fields }: LayoutManagerProps
         <div>
           <h3 className="text-lg font-medium">Page Layouts</h3>
           <p className="text-sm text-muted-foreground">
-            Configure field order, sections, and visibility for create/edit/detail pages.
+            Configure the sections and fields shown on this object. The Default layout is used on Lead record pages.
           </p>
         </div>
         <Button onClick={() => setShowCreateDialog(true)}>

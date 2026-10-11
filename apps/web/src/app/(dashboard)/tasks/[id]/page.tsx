@@ -9,6 +9,8 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { taskApi, ApiResponse } from "@/lib/api";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
+import { RecordSummary } from "@/components/crm/record-summary";
 
 import { useToast } from "@/hooks/use-toast";
 
@@ -34,6 +36,7 @@ import {
   FileText,
   History,
   StickyNote,
+  Pencil,
 } from "lucide-react";
 
 interface TaskData {
@@ -47,6 +50,31 @@ interface TaskData {
   relatedTo?: string;
   relatedType?: string;
   completedAt?: string;
+  subject?: string;
+  salesforceStatus?: string;
+  salesforcePriority?: string;
+  callDurationInSeconds?: number | null;
+  callObject?: string | null;
+  callDisposition?: string | null;
+  callType?: string | null;
+  isRecurrence?: boolean;
+  recurrenceInterval?: number | null;
+  email?: string | null;
+  phone?: string | null;
+  isVisibleInSelfService?: boolean;
+  isReminderSet?: boolean;
+  recurrenceRegeneratedType?: string | null;
+  taskSubtype?: string | null;
+  taskType?: string | null;
+  owner?: { firstName: string; lastName: string };
+  lead?: { id: string; firstName: string; lastName: string; phone?: string };
+  siteVisit?: { id: string; siteVisitNumber: string };
+  opportunity?: { id: string; name: string };
+  booking?: { id: string; number: string };
+  project?: { id: string; name: string };
+  unit?: { id: string; number: string };
+  createdBy?: { firstName: string; lastName: string } | null;
+  lastModifiedBy?: { firstName: string; lastName: string } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -155,22 +183,40 @@ export default function TaskDetailPage() {
   }
 
   if (!task) return null;
+  const relatedRecord = task.siteVisit?.siteVisitNumber
+    ? `Site Visit ${task.siteVisit.siteVisitNumber}`
+    : task.opportunity?.name
+      ? `Opportunity ${task.opportunity.name}`
+      : task.booking?.number
+        ? `Booking ${task.booking.number}`
+        : task.project?.name
+          ? `Project ${task.project.name}`
+          : task.unit?.number
+            ? `Unit ${task.unit.number}`
+            : null;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/tasks">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-          </Button>
-          <div>
-            <h1 className="text-xl font-semibold">{task.title}</h1>
-            <p className="text-muted-foreground">Task #{task.id}</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
+      <RecordPageHeader
+        objectLabel="Task"
+        title={task.subject || task.title}
+        subtitle={relatedRecord ? `Related to ${relatedRecord}` : `Task #${task.id}`}
+        backHref="/tasks"
+        icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
+        badges={
+          <>
+            <Badge variant={STATUS_VARIANT[task.status] || "default"}>{task.status.replace(/_/g, " ")}</Badge>
+            <Badge variant="outline">{task.salesforcePriority || task.priority}</Badge>
+          </>
+        }
+        actions={
+          <>
+            <Button variant="outline" asChild>
+              <Link href={`/tasks/${task.id}/edit`}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit
+              </Link>
+            </Button>
           {task.status !== "completed" ? (
             <Button onClick={handleComplete}>
               <CheckCircle2 className="mr-2 h-4 w-4" />
@@ -182,71 +228,16 @@ export default function TaskDetailPage() {
               Reopen
             </Button>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <CheckCircle2 className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Status</p>
-                <Badge variant={STATUS_VARIANT[task.status] || "default"}>
-                  {STATUS_LABEL[task.status] || task.status}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <AlertTriangle className="h-5 w-5 text-orange-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Priority</p>
-                <Badge variant={PRIORITY_VARIANT[task.priority] || "default"}>
-                  {PRIORITY_LABEL[task.priority] || task.priority}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Due Date</p>
-                <p className="text-sm font-medium">
-                  {task.dueDate
-                    ? formatDate(task.dueDate)
-                    : "Not set"}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <User className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Assigned To</p>
-                <p className="text-sm font-medium">{task.assignedTo || "Unassigned"}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <RecordSummary items={[
+        { label: "Status", value: STATUS_LABEL[task.status] || task.status },
+        { label: "Priority", value: PRIORITY_LABEL[task.priority] || task.priority },
+        { label: "Due Date", value: task.dueDate ? formatDate(task.dueDate) : "Not set" },
+        { label: "Assigned To", value: task.assignedTo || "Unassigned" },
+      ]} />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
@@ -275,9 +266,21 @@ export default function TaskDetailPage() {
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Title</span>
-                  <span className="text-sm font-medium">{task.title}</span>
+                  <span className="text-sm font-medium">{task.subject || task.title}</span>
                 </div>
                 <Separator />
+                {task.salesforceStatus && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Salesforce Status</span>
+                    <span className="text-sm font-medium">{task.salesforceStatus}</span>
+                  </div>
+                )}
+                {task.salesforcePriority && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Salesforce Priority</span>
+                    <span className="text-sm font-medium">{task.salesforcePriority}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Status</span>
                   <Badge variant={STATUS_VARIANT[task.status] || "default"}>
@@ -292,8 +295,18 @@ export default function TaskDetailPage() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Assigned To</span>
-                  <span className="text-sm font-medium">{task.assignedTo || "Unassigned"}</span>
+                  <span className="text-sm font-medium">
+                    {task.owner ? `${task.owner.firstName} ${task.owner.lastName}`.trim() : task.assignedTo || "Unassigned"}
+                  </span>
                 </div>
+                {task.lead && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Name</span>
+                    <Link className="text-sm font-medium text-primary hover:underline" href={`/leads/${task.lead.id}`}>
+                      {[task.lead.firstName, task.lead.lastName].filter(Boolean).join(" ") || task.lead.phone || "Lead"}
+                    </Link>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -339,7 +352,7 @@ export default function TaskDetailPage() {
             </Card>
           </div>
 
-          {task.relatedTo && (
+          {relatedRecord && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -349,7 +362,7 @@ export default function TaskDetailPage() {
               <CardContent>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Record</span>
-                  <span className="text-sm font-medium">{task.relatedTo}</span>
+                  <span className="text-sm font-medium">{relatedRecord}</span>
                 </div>
                 {task.relatedType && (
                   <div className="flex items-center justify-between mt-2">
@@ -373,6 +386,28 @@ export default function TaskDetailPage() {
               </CardContent>
             </Card>
           )}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Salesforce Task fields</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2">
+              <Detail label="Call Type" value={task.callType} />
+              <Detail label="Call Result" value={task.callDisposition} />
+              <Detail label="Call Object" value={task.callObject} />
+              <Detail label="Call Duration" value={task.callDurationInSeconds == null ? undefined : `${task.callDurationInSeconds} seconds`} />
+              <Detail label="Email" value={task.email} />
+              <Detail label="Phone" value={task.phone} />
+              <Detail label="Repeat This Task" value={task.recurrenceRegeneratedType} />
+              <Detail label="Task Subtype" value={task.taskSubtype} />
+              <Detail label="Type" value={task.taskType} />
+              <Detail label="Recurrence Interval" value={task.recurrenceInterval == null ? undefined : String(task.recurrenceInterval)} />
+              <Detail label="Created By" value={task.createdBy ? `${task.createdBy.firstName} ${task.createdBy.lastName}`.trim() : undefined} />
+              <Detail label="Last Modified By" value={task.lastModifiedBy ? `${task.lastModifiedBy.firstName} ${task.lastModifiedBy.lastName}`.trim() : undefined} />
+              <Detail label="Recurring Series" value={task.isRecurrence ? "Yes" : "No"} />
+              <Detail label="Reminder Set" value={task.isReminderSet ? "Yes" : "No"} />
+              <Detail label="Public" value={task.isVisibleInSelfService ? "Yes" : "No"} />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="activity">
@@ -393,6 +428,16 @@ export default function TaskDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value?: string | null }) {
+  if (value == null || value === "") return null;
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium text-right">{value}</span>
     </div>
   );
 }

@@ -9,6 +9,8 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { quotationApi } from "@/lib/api";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
+import { RecordSummary } from "@/components/crm/record-summary";
 
 import { useToast } from "@/hooks/use-toast";
 
@@ -163,19 +165,15 @@ export default function QuotationDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/quotations">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-          </Button>
-          <div>
-            <h1 className="text-xl font-semibold">{quotation.quotationNumber}</h1>
-            <p className="text-muted-foreground">Quotation for {quotation.leadName}</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
+      <RecordPageHeader
+        objectLabel="Quotation"
+        title={quotation.quotationNumber}
+        subtitle={`For ${quotation.leadName}`}
+        backHref="/quotations"
+        icon={<FileText className="h-5 w-5" aria-hidden="true" />}
+        badges={<Badge variant={STATUS_VARIANT[quotation.status] || "default"}>{STATUS_LABEL[quotation.status] || quotation.status}</Badge>}
+        actions={
+          <>
           {quotation.status === "draft" && (
             <Button onClick={handleSubmit}>
               <Send className="mr-2 h-4 w-4" />
@@ -194,69 +192,16 @@ export default function QuotationDetailPage() {
               </Button>
             </>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <DollarSign className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Amount</p>
-                <p className="text-lg font-bold">{formatCurrency(quotation.amount)}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <CheckCircle2 className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Status</p>
-                <Badge variant={STATUS_VARIANT[quotation.status] || "default"}>
-                  {STATUS_LABEL[quotation.status] || quotation.status}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Valid Until</p>
-                <p className="text-sm font-medium">
-                  {formatDate(quotation.validUntil)}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-orange-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Created</p>
-                <p className="text-sm font-medium">
-                  {formatDate(quotation.createdAt)}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <RecordSummary items={[
+        { label: "Amount", value: formatCurrency(quotation.amount) },
+        { label: "Status", value: STATUS_LABEL[quotation.status] || quotation.status },
+        { label: "Valid Until", value: formatDate(quotation.validUntil) },
+        { label: "Created", value: formatDate(quotation.createdAt) },
+      ]} />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>

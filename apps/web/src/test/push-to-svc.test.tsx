@@ -12,6 +12,9 @@ const testState = vi.hoisted(() => ({
   pushToSVC: vi.fn(),
   scheduleSiteVisit: vi.fn(),
   projectList: vi.fn(),
+  getActivityHistory: vi.fn(),
+  getAuditHistory: vi.fn(),
+  getNotes: vi.fn(),
   profile: { name: "Presales" },
   leadUpdatePermission: true,
   effectivePermissions: [] as string[],
@@ -45,7 +48,8 @@ vi.mock("@/lib/api", () => ({
     get: testState.leadGet,
     pushToSVC: testState.pushToSVC,
     scheduleSiteVisit: testState.scheduleSiteVisit,
-    getAuditHistory: vi.fn(),
+    getActivityHistory: testState.getActivityHistory,
+    getAuditHistory: testState.getAuditHistory,
   },
   objectManagerApi: {
     getDefaultLayout: vi.fn().mockResolvedValue({ data: { data: null } }),
@@ -54,6 +58,7 @@ vi.mock("@/lib/api", () => ({
   projectApi: { listAll: testState.projectList },
   unitApi: { list: vi.fn() },
   siteVisitApi: {},
+  notesApi: { get: testState.getNotes },
   opportunityApi: {},
   activityApi: {},
   taskApi: {},
@@ -87,6 +92,9 @@ beforeEach(() => {
   testState.profile.name = "Presales";
   testState.leadUpdatePermission = true;
   testState.effectivePermissions = [];
+  testState.getActivityHistory.mockResolvedValue({ data: { success: true, data: [] } });
+  testState.getAuditHistory.mockResolvedValue({ data: { success: true, data: [] } });
+  testState.getNotes.mockResolvedValue({ data: { success: true, data: { notes: "" } } });
   testState.leadGet
     .mockResolvedValueOnce({ data: { success: true, data: incomingLead } })
     .mockRejectedValue({ response: { status: 403, data: { error: "You do not have access to this lead" } } });

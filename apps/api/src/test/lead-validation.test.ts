@@ -33,4 +33,10 @@ describe('lead creation required fields', () => {
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.status).toBe('NEW');
   });
+
+  it('accepts Lead Interest values used by the new lead form', () => {
+    const result = leadCreateSchema.safeParse({ ...validLead, leadInterest: 'UNABLE_TO_CONNECT' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.leadInterest).toBe('UNABLE_TO_CONNECT');
+  });
 });

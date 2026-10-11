@@ -39,7 +39,9 @@ const columns: ColumnDef<FollowUp>[] = [
       const item = row.original;
       return (
         <div>
-          <span className="font-medium">{item.title}</span>
+          <Link href={`/follow-ups/${item.id}`} className="font-medium text-primary hover:underline">
+            {item.title}
+          </Link>
           {item.description && (
             <p className="text-sm text-muted-foreground line-clamp-1">{item.description}</p>
           )}

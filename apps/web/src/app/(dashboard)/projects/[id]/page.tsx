@@ -26,6 +26,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 import { useToast } from "@/hooks/use-toast";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
+import { RecordSummary } from "@/components/crm/record-summary";
 
 import { projectApi, unitApi } from "@/lib/api";
 import { projectLocationLabel } from "@/lib/project-location";
@@ -288,26 +290,19 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/projects">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
+      <RecordPageHeader
+        objectLabel="Project"
+        title={project.name}
+        subtitle={project.location}
+        backHref="/projects"
+        icon={<Building2 className="h-5 w-5" aria-hidden="true" />}
+        actions={
+          <Button variant="outline" onClick={openLocationEditor}>
+            <Edit className="mr-2 h-4 w-4" />
+            Edit Location
           </Button>
-          <div>
-            <h1 className="text-xl font-semibold">{project.name}</h1>
-            <p className="text-muted-foreground flex items-center gap-1">
-              <MapPin className="h-4 w-4" />
-              {project.location}
-            </p>
-          </div>
-        </div>
-        <Button variant="outline" onClick={openLocationEditor}>
-          <Edit className="mr-2 h-4 w-4" />
-          Edit Location
-        </Button>
-      </div>
+        }
+      />
 
       <Card>
         <CardContent className="p-4">
@@ -323,60 +318,12 @@ export default function ProjectDetailPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <Building2 className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Total Units</p>
-                <p className="text-xl font-semibold">{project.totalUnits}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <Home className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Available</p>
-                <p className="text-xl font-semibold">{availableCount}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-yellow-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-yellow-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Booked</p>
-                <p className="text-xl font-semibold">{bookedCount}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <TrendingUp className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Sold</p>
-                <p className="text-xl font-semibold">{soldCount}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <RecordSummary items={[
+        { label: "Total Units", value: String(project.totalUnits) },
+        { label: "Available", value: String(availableCount) },
+        { label: "Booked", value: String(bookedCount) },
+        { label: "Sold", value: String(soldCount) },
+      ]} />
 
       <Tabs defaultValue="inventory" className="space-y-4">
         <TabsList>

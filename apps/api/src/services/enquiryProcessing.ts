@@ -204,6 +204,7 @@ function serializeDetails(details: Record<string, unknown> | undefined): Prisma.
 export async function processLeadEnquiry(input: {
   tenantId: string;
   userId: string;
+  salesUserId?: string;
   profileName?: string | null;
   expectedLeadId?: string;
   lead: LeadCreateData;
@@ -220,6 +221,18 @@ export async function processLeadEnquiry(input: {
   };
 
   return prisma.$transaction(async (tx) => {
+    const selectedOwner = input.salesUserId
+      ? await tx.user.findFirst({
+          where: { id: input.salesUserId, tenantId: input.tenantId, isActive: true },
+          select: { id: true, profile: { select: { name: true } } },
+        })
+      : null;
+    if (input.salesUserId && !/^sales(?:\b|$)/i.test(selectedOwner?.profile?.name || '')) {
+      throw new Error('SALES_USER_INVALID');
+    }
+    const ownerId = selectedOwner?.id || input.userId;
+    const ownerProfileName = selectedOwner?.profile?.name || input.profileName || null;
+
     const phoneLockKeys = [...new Set([
       normalizedPhone,
       ...(metadata.secondaryPhone ? [metadata.secondaryPhone] : []),
@@ -339,7 +352,7 @@ export async function processLeadEnquiry(input: {
             leadType: 'RE_ENGAGED',
             lastReEngagedAt: now,
             lostAt: null,
-            ownerId: input.userId,
+            ownerId,
             ...(input.lead.projectId ? { projectId: input.lead.projectId } : {}),
           } : {}),
         },
@@ -377,7 +390,7 @@ export async function processLeadEnquiry(input: {
         const projectName = input.lead.projectId
           ? (await tx.project.findFirst({ where: { id: input.lead.projectId, tenantId: input.tenantId }, select: { name: true } }))?.name || null
           : existing.project?.name || null;
-        const rrQueue = await findApplicableRRQueue(input.tenantId, {
+        const rrQueue = input.salesUserId ? null : await findApplicableRRQueue(input.tenantId, {
           projectId,
           projectName,
           status: 'NEW',
@@ -477,6 +490,7 @@ export async function processLeadEnquiry(input: {
         lastCampaign: metadata.campaign,
         status: 'NEW',
         rating: input.lead.rating || undefined,
+        leadInterest: input.lead.leadInterest || undefined,
         description: input.lead.description || undefined,
         street: input.lead.street || undefined,
         city: input.lead.city || undefined,
@@ -485,7 +499,7 @@ export async function processLeadEnquiry(input: {
         postalCode: input.lead.postalCode || undefined,
         score: input.lead.score || 0,
         budget: input.lead.budget || undefined,
-        ownerId: input.userId,
+        ownerId,
         projectId: input.lead.projectId || undefined,
         customFields: input.lead.customFields || {},
       },
@@ -498,9 +512,9 @@ export async function processLeadEnquiry(input: {
       tenantId: input.tenantId,
       leadId: newLead.id,
       previousOwnerId: null,
-      newOwnerId: input.userId,
+      newOwnerId: ownerId,
       previousProfile: null,
-      newProfile: input.profileName || null,
+      newProfile: ownerProfileName,
       previousStatus: null,
       newStatus: 'NEW',
       handoffReason: 'Lead Created',
@@ -508,20 +522,29 @@ export async function processLeadEnquiry(input: {
     }, tx);
     let assignment: unknown = null;
     let assignmentWarning: string | undefined;
-    try {
-      assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
-        tenantId: input.tenantId,
-        leadId: newLead.id,
-        projectId: newLead.projectId,
-        userType: 'Pre Sales',
-        actorId: input.userId,
-        reason: 'New lead assigned to Pre Sales round robin',
-      });
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.startsWith('NO_ELIGIBLE_RR_MEMBER:')) {
-        throw error;
+    if (!input.salesUserId) {
+      try {
+        assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+          tenantId: input.tenantId,
+          leadId: newLead.id,
+          projectId: newLead.projectId,
+          userType: 'Pre Sales',
+          actorId: input.userId,
+          reason: 'New lead assigned to Pre Sales round robin',
+        });
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !(
+            error.message === 'NO_ELIGIBLE_USER' ||
+            error.message === 'RR_QUEUE_NOT_CONFIGURED:Pre Sales' ||
+            error.message === 'NO_ELIGIBLE_RR_MEMBER:Pre Sales'
+          )
+        ) {
+          throw error;
+        }
+        assignmentWarning = 'There is no eligible Sales user (Pre Sales) available; the lead remains assigned to its current owner.';
       }
-      assignmentWarning = 'No eligible Pre Sales user is available; the lead remains assigned to its current owner.';
     }
     const assignedLead = await tx.lead.findUniqueOrThrow({
       where: { id: newLead.id },

@@ -128,6 +128,7 @@ export const leadSchema = z.object({
   }),
   status: z.enum(['NEW', 'INCOMING', 'PROSPECT', 'SITE_VISIT_SCHEDULED', 'SITE_VISIT_HAPPENED', 'BOOKED', 'LOST']).optional(),
   rating: z.enum(['HOT', 'WARM', 'COLD']).optional(),
+  leadInterest: z.enum(['PROSPECT', 'HOT', 'WARM', 'UNABLE_TO_CONNECT', 'DROPPED', 'COLD']).optional(),
   description: z.string().optional(),
   street: z.string().optional(),
   city: z.string().optional(),
@@ -155,6 +156,7 @@ export const siteVisitSchema = z.object({
   assigneeId: z.string().optional(),
   scheduledAt: z.string().datetime(),
   notes: z.string().min(1, 'Note/reason is required'),
+  customFields: z.record(z.string(), jsonValueSchema).optional(),
 });
 
 export const opportunitySchema = z.object({
@@ -226,14 +228,42 @@ export const unitSchema = z.object({
 });
 
 export const taskSchema = z.object({
-  title: z.string().min(1, 'Title/Description is required'),
-  description: z.string().min(1, 'Description is required'),
+  title: z.string().trim().min(1, 'Title/Subject is required').max(255),
+  subject: z.string().trim().min(1, 'Subject is required').max(255).optional(),
+  description: z.string().max(32000).optional(),
   status: z.enum(['PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']).default('PENDING'),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).default('MEDIUM'),
-  dueDate: z.string().min(1, 'Due date is required'),
+  salesforceStatus: z.string().max(255).optional(),
+  salesforcePriority: z.string().max(255).optional(),
+  dueDate: z.string().refine(
+    (value) => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      const parsed = Date.parse(dateOnly ? `${value}T00:00:00.000Z` : value);
+      return !Number.isNaN(parsed) && (!dateOnly || new Date(parsed).toISOString().slice(0, 10) === value);
+    },
+    'Due date must be a valid date',
+  ),
+  completedAt: z.string().datetime().optional(),
+  ownerId: z.string().min(1).optional(),
   leadId: z.string().optional(),
   siteVisitId: z.string().optional(),
   opportunityId: z.string().optional(),
+  bookingId: z.string().optional(),
+  projectId: z.string().optional(),
+  unitId: z.string().optional(),
+  callDurationInSeconds: z.number().int().min(0).max(99999999).nullable().optional(),
+  callObject: z.string().max(255).nullable().optional(),
+  callDisposition: z.string().max(255).nullable().optional(),
+  callType: z.string().max(255).nullable().optional(),
+  isRecurrence: z.boolean().optional(),
+  recurrenceInterval: z.number().int().min(0).max(999999999).nullable().optional(),
+  email: z.union([z.string().email().max(255), z.literal('')]).nullable().optional(),
+  phone: z.string().max(255).nullable().optional(),
+  isVisibleInSelfService: z.boolean().optional(),
+  isReminderSet: z.boolean().optional(),
+  recurrenceRegeneratedType: z.string().max(255).nullable().optional(),
+  taskSubtype: z.string().max(255).nullable().optional(),
+  taskType: z.string().max(255).nullable().optional(),
 });
 
 export const followUpSchema = z.object({

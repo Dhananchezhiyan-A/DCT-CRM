@@ -91,6 +91,8 @@ export const leadApi = {
     api.post<ApiResponse>(`/api/leads/${id}/convert`, data || {}),
   getAuditHistory: (id: string, params?: Record<string, any>) =>
     api.get<ApiResponse>(`/api/leads/${id}/audit-history`, { params }),
+  getActivityHistory: (id: string, params?: Record<string, any>) =>
+    api.get<ApiResponse>(`/api/leads/${id}/activity-history`, { params }),
   getEnquiries: (id: string, params?: Record<string, any>) =>
     api.get<ApiResponse>(`/api/leads/${id}/enquiries`, { params }),
 };
@@ -107,6 +109,8 @@ export const siteVisitApi = {
     api.get<ApiResponse>('/api/site-visits', { params }),
   get: (id: string) =>
     api.get<ApiResponse>(`/api/site-visits/${id}`),
+  getHistory: (id: string, params?: Record<string, any>) =>
+    api.get<ApiResponse>(`/api/site-visits/${id}/history`, { params }),
   create: (data: any) =>
     api.post<ApiResponse>('/api/site-visits', data),
   update: (id: string, data: any) =>
@@ -183,6 +187,14 @@ export const bookingApi = {
     api.patch<ApiResponse>(`/api/bookings/${id}/confirm`),
   cancel: (id: string, notes?: string) =>
     api.patch<ApiResponse>(`/api/bookings/${id}/cancel`, { notes }),
+};
+
+// Notes API resolves the record type from its tenant-scoped record ID.
+export const notesApi = {
+  get: (recordId: string) =>
+    api.get<ApiResponse<{ notes: string }>>(`/api/notes/${recordId}`),
+  add: (recordId: string, note: string) =>
+    api.post<ApiResponse<{ notes: string; number: number }>>(`/api/notes/${recordId}`, { note }),
 };
 
 // Payment API

@@ -4,6 +4,7 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { DynamicDetail } from "@/components/dynamic/dynamic-detail";
+import { useAuth } from "@/contexts/auth-context";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,6 +32,7 @@ interface ObjectMetadata {
 export default function ObjectDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const { hasPermission } = useAuth();
   const objectName = params.objectName as string;
   const recordId = params.id as string;
 
@@ -38,13 +40,9 @@ export default function ObjectDetailPage() {
   const [record, setRecord] = React.useState<any>(null);
   const [isLoading, setIsLoading] = React.useState(true);
   const [isRecordLoading, setIsRecordLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [recordError, setRecordError] = React.useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = React.useState(false);
-  const [permissions, setPermissions] = React.useState({
-    canCreate: true,
-    canRead: true,
-    canUpdate: true,
-    canDelete: true,
-  });
 
   React.useEffect(() => {
     loadMetadata();
@@ -58,11 +56,13 @@ export default function ObjectDetailPage() {
 
   const loadMetadata = async () => {
     setIsLoading(true);
+    setLoadError(null);
     try {
       const res = await objectManagerApi.getObject(objectName);
       setMetadata(res.data.data);
     } catch (error) {
       console.error("Failed to load object metadata:", error);
+      setLoadError(error instanceof Error ? error.message : "Object metadata could not be loaded.");
     } finally {
       setIsLoading(false);
     }
@@ -70,11 +70,14 @@ export default function ObjectDetailPage() {
 
   const loadRecord = async () => {
     setIsRecordLoading(true);
+    setRecordError(null);
     try {
       const res = await dynamicRecordApi.get(objectName, recordId);
       setRecord(res.data.data);
     } catch (error) {
       console.error("Failed to load record:", error);
+      setRecord(null);
+      setRecordError(error instanceof Error ? error.message : "Record could not be loaded.");
     } finally {
       setIsRecordLoading(false);
     }
@@ -90,7 +93,7 @@ export default function ObjectDetailPage() {
     router.push(`/objects/${objectName}`);
   };
 
-  if (isLoading || !metadata) {
+  if (isLoading) {
     return (
       <DynamicDetail
         objectName={objectName}
@@ -103,8 +106,13 @@ export default function ObjectDetailPage() {
     );
   }
 
+  if (!metadata) {
+    return <p role="alert" className="py-8 text-center text-sm text-destructive">{loadError || "Object metadata could not be loaded."}</p>;
+  }
+
   return (
     <>
+      {recordError && <p role="alert" className="text-sm text-destructive">{recordError}</p>}
       <DynamicDetail
         objectName={metadata.name}
         objectLabel={metadata.label}
@@ -115,8 +123,8 @@ export default function ObjectDetailPage() {
         isLoading={isRecordLoading}
         onEdit={handleEdit}
         onDelete={() => setShowDeleteDialog(true)}
-        canUpdate={permissions.canUpdate}
-        canDelete={permissions.canDelete}
+        canUpdate={hasPermission(metadata.name, "edit")}
+        canDelete={hasPermission(metadata.name, "delete")}
         basePath={`/objects/${objectName}`}
       />
 

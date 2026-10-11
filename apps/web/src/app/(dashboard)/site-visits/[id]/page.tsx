@@ -30,6 +30,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
+import { SiteVisitHistoryTimeline } from "@/components/crm/site-visit-history-timeline";
 
 import {
   ArrowLeft,
@@ -59,6 +61,7 @@ interface SiteVisitData {
   cancelledAt?: string | null;
   cancelledBy?: { id: string; firstName: string; lastName: string; profile?: { name: string } | null } | null;
   rating?: number | null;
+  customFields?: Record<string, any> | null;
   createdAt: string;
   updatedAt: string;
   lead?: { id: string; leadNumber?: string | null; firstName: string; lastName: string; phone?: string | null; company?: string | null; email?: string | null; status?: string; owner?: { firstName: string; lastName: string; email?: string | null; profile?: { name: string } | null } | null };
@@ -341,21 +344,15 @@ export default function SiteVisitDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/site-visits">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-          </Button>
-          <div>
-            <h1 className="text-xl font-semibold">Site Visit - {leadName}</h1>
-            <p className="text-muted-foreground">
-              {siteVisit.siteVisitNumber ? `Site Visit ${siteVisit.siteVisitNumber}` : `Site Visit #${siteVisit.id.slice(-8).toUpperCase()}`}
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-2">
+      <RecordPageHeader
+        objectLabel="Site Visit"
+        title={siteVisit.siteVisitNumber || `#${siteVisit.id.slice(-8).toUpperCase()}`}
+        subtitle={`Lead: ${leadName} · Project: ${projectName}`}
+        backHref="/site-visits"
+        icon={<MapPin className="h-5 w-5" aria-hidden="true" />}
+        badges={<Badge variant={STATUS_VARIANT[status] || "default"}>{STATUS_LABEL[status] || status}</Badge>}
+        actions={
+          <>
           {status === "SCHEDULED" && (
             <>
               <Button onClick={() => {
@@ -389,237 +386,136 @@ export default function SiteVisitDetailPage() {
               </Button>
             </>
           )}
+          </>
+        }
+      />
+
+      <div className="border-b">
+        <div className="inline-flex items-center gap-2 border-b-2 border-primary px-3 py-2 text-sm font-medium">
+          <FileText className="h-4 w-4" />
+          Details
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <CheckCircle2 className="h-5 w-5 text-blue-600" />
+      <div className="grid items-start gap-4 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          <Card>
+            <CardHeader className="border-b bg-muted/30 py-3">
+              <CardTitle>Site Visit Information</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-x-8 gap-y-3 p-4 sm:grid-cols-2">
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Site Visit Number</span>
+                <span className="text-right text-sm font-medium font-mono">{siteVisit.siteVisitNumber || "—"}</span>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Status</p>
-                <Badge variant={STATUS_VARIANT[status] || "default"}>
-                  {STATUS_LABEL[status] || status}
-                </Badge>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Owner</span>
+                <span className="text-right text-sm font-medium">{assignedTo}</span>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <Calendar className="h-5 w-5 text-purple-600" />
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Project</span>
+                <span className="text-right text-sm font-medium">{projectName}</span>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Visit Date</p>
-                <p className="text-sm font-medium">
-                  {formatDate(visitDate)}
-                </p>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Lead</span>
+                <span className="text-right text-sm font-medium">{leadName}</span>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <User className="h-5 w-5 text-green-600" />
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Scheduled Date</span>
+                <span className="text-right text-sm font-medium">{formatDateTime(visitDate)}</span>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Assigned To</p>
-                <p className="text-sm font-medium">{assignedTo}</p>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Status</span>
+                <Badge variant={STATUS_VARIANT[status] || "default"}>{STATUS_LABEL[status] || status}</Badge>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <MapPin className="h-5 w-5 text-orange-600" />
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Lead Number</span>
+                <span className="text-right text-sm font-medium font-mono">{siteVisit.lead?.leadNumber || "—"}</span>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Project</p>
-                <p className="text-sm font-medium">{projectName}</p>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Created By</span>
+                <span className="text-right text-sm font-medium">
+                  {siteVisit.creator
+                    ? `${siteVisit.creator.firstName} ${siteVisit.creator.lastName}${siteVisit.creator.profile?.name ? ` (${siteVisit.creator.profile.name})` : ""}`
+                    : "—"}
+                </span>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="details" className="gap-2">
-            <FileText className="h-4 w-4" />
-            Details
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-2">
-            <History className="h-4 w-4" />
-            Activity
-          </TabsTrigger>
-          <TabsTrigger value="notes" className="gap-2">
-            <StickyNote className="h-4 w-4" />
-            Notes
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="details" className="space-y-6">
-          <div className="grid gap-6 md:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Site Visit Information
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Site Visit Number</span>
-                  <span className="text-sm font-medium font-mono">{siteVisit.siteVisitNumber || "—"}</span>
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Lead Name</span>
-                  <span className="text-sm font-medium">{leadName}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Lead Number</span>
-                  <span className="text-sm font-medium font-mono">{siteVisit.lead?.leadNumber || "—"}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Phone</span>
-                  <span className="text-sm font-medium">{siteVisit.lead?.phone || "—"}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Company</span>
-                  <span className="text-sm font-medium">{siteVisit.lead?.company || "—"}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Email</span>
-                  <span className="text-sm font-medium">{siteVisit.lead?.email || "—"}</span>
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Project</span>
-                  <span className="text-sm font-medium">{projectName}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Assigned To</span>
-                  <span className="text-sm font-medium">{assignedTo}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Status</span>
-                  <Badge variant={STATUS_VARIANT[status] || "default"}>
-                    {STATUS_LABEL[status] || status}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Created By</span>
-                  <span className="text-sm font-medium">
-                    {siteVisit.creator
-                      ? `${siteVisit.creator.firstName} ${siteVisit.creator.lastName}${siteVisit.creator.profile?.name ? ` (${siteVisit.creator.profile.name})` : ""}`
-                      : "—"}
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Phone</span>
+                <span className="text-right text-sm font-medium">{siteVisit.lead?.phone || "—"}</span>
+              </div>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Created</span>
+                <span className="text-right text-sm font-medium">{formatDateTime(siteVisit.createdAt)}</span>
+              </div>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Company</span>
+                <span className="text-right text-sm font-medium">{siteVisit.lead?.company || "—"}</span>
+              </div>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Last Modified</span>
+                <span className="text-right text-sm font-medium">{formatDateTime(siteVisit.updatedAt)}</span>
+              </div>
+              <div className="flex items-start justify-between gap-3 border-b pb-2">
+                <span className="text-sm text-muted-foreground">Email</span>
+                <span className="break-all text-right text-sm font-medium">{siteVisit.lead?.email || "—"}</span>
+              </div>
+              {siteVisit.previousSiteVisit && (
+                <div className="flex items-start justify-between gap-3 border-b pb-2">
+                  <span className="text-sm text-muted-foreground">Previous Visit</span>
+                  <span className="text-right text-sm font-medium font-mono">
+                    {siteVisit.previousSiteVisit.siteVisitNumber || siteVisit.previousSiteVisit.id.slice(-8).toUpperCase()}
                   </span>
                 </div>
-                {siteVisit.previousSiteVisit && (
-                  <>
-                    <Separator />
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Previous Visit</span>
-                      <span className="text-sm font-medium font-mono">
-                        {siteVisit.previousSiteVisit.siteVisitNumber || siteVisit.previousSiteVisit.id.slice(-8).toUpperCase()}
-                      </span>
+              )}
+            </CardContent>
+          </Card>
+
+        </div>
+
+        <aside className="space-y-4 lg:col-span-1">
+          <Card>
+            <CardHeader className="border-b bg-muted/30 py-3">
+              <CardTitle>Feedback</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 p-4">
+              {siteVisit.feedback || siteVisit.customerFeedback || siteVisit.completionNotes ? (
+                <>
+                  {siteVisit.feedback && (
+                    <div className="flex items-start gap-2">
+                      <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      <p className="whitespace-pre-wrap text-sm">{siteVisit.feedback}</p>
                     </div>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Timeline
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Visit Date</p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDate(visitDate)}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Clock className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Created</p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDateTime(siteVisit.createdAt)}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Last Updated</p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDateTime(siteVisit.updatedAt)}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <History className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Notes</p>
-                    <p className="text-xs text-muted-foreground whitespace-pre-wrap">
-                      {siteVisit.notes || "—"}
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {siteVisit.feedback && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Feedback
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-start gap-3">
-                  <MessageSquare className="h-4 w-4 text-muted-foreground mt-0.5" />
-                  <p className="text-sm whitespace-pre-wrap">{siteVisit.feedback}</p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-
-        <TabsContent value="activity">
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              <History className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p>No activity recorded</p>
+                  )}
+                  {siteVisit.customerFeedback && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground">Customer Feedback</p>
+                      <p className="mt-1 whitespace-pre-wrap text-sm">{siteVisit.customerFeedback}</p>
+                    </div>
+                  )}
+                  {siteVisit.completionNotes && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground">Completion Feedback</p>
+                      <p className="mt-1 whitespace-pre-wrap text-sm">{siteVisit.completionNotes}</p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">No feedback recorded.</p>
+              )}
             </CardContent>
           </Card>
-        </TabsContent>
 
-        <TabsContent value="notes">
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              <StickyNote className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p>{siteVisit.notes || "No notes added"}</p>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+          <SiteVisitHistoryTimeline
+            siteVisitId={siteVisit.id}
+            siteVisitNumber={siteVisit.siteVisitNumber || `#${siteVisit.id.slice(-8).toUpperCase()}`}
+            leadName={leadName}
+            createdAt={siteVisit.createdAt}
+            createdBy={siteVisit.creator}
+            scheduledAt={siteVisit.scheduledAt}
+          />
+        </aside>
+      </div>
 
       <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
         <DialogContent>

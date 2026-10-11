@@ -16,6 +16,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Pencil } from "lucide-react";
 
 interface LayoutSection {
   name: string;
@@ -51,6 +53,10 @@ interface LayoutDrivenFormProps {
   fields?: any[];
   projects?: { id: string; name: string; isActive?: boolean }[];
   fieldErrors?: Record<string, string>;
+  editingField?: string | null;
+  onBeginEdit?: (fieldName: string) => void;
+  onSaveField?: () => void;
+  onCancelField?: () => void;
 }
 
 export default function LayoutDrivenForm({
@@ -63,6 +69,10 @@ export default function LayoutDrivenForm({
   fields: propFields,
   projects = [],
   fieldErrors,
+  editingField,
+  onBeginEdit,
+  onSaveField,
+  onCancelField,
 }: LayoutDrivenFormProps) {
   const [layout, setLayout] = React.useState<any>(propLayout || null);
   const [fields, setFields] = React.useState<LayoutField[]>(propFields || []);
@@ -70,8 +80,15 @@ export default function LayoutDrivenForm({
   const [lookupOptions, setLookupOptions] = React.useState<Record<string, any[]>>({});
 
   React.useEffect(() => {
-    if (propLayout && propFields) return;
-    loadData();
+    if (propLayout) {
+      setLayout(propLayout);
+    }
+    if (propFields) {
+      setFields(propFields);
+    }
+    if (!propLayout || !propFields) {
+      loadData();
+    }
   }, [objectName, propLayout, propFields]);
 
   const loadData = async () => {
@@ -95,7 +112,18 @@ export default function LayoutDrivenForm({
     const raw = typeof layout.sections === "string"
       ? JSON.parse(layout.sections)
       : layout.sections;
-    const configuredSections: LayoutSection[] = Array.isArray(raw) ? raw : [];
+    const configuredSections: LayoutSection[] = Array.isArray(raw)
+      ? raw
+          .filter((section): section is LayoutSection =>
+            !!section &&
+            typeof section.name === "string" &&
+            Array.isArray(section.fields),
+          )
+          .map((section) => ({
+            name: section.name,
+            fields: section.fields.filter((field): field is string => typeof field === "string"),
+          }))
+      : [];
     if (objectName !== "Lead" || configuredSections.some((section) => section.fields.includes("projectId"))) {
       return configuredSections;
     }
@@ -129,7 +157,10 @@ export default function LayoutDrivenForm({
   };
 
   const renderField = (field: LayoutField, value: any) => {
-    const isDisabled = mode === "detail" || !field.editable || field.isSystemField;
+    const isDisabled =
+      (mode === "detail" && field.name !== editingField) ||
+      !field.editable ||
+      field.isSystemField;
 
     switch (field.fieldType) {
       case "text":
@@ -230,6 +261,16 @@ export default function LayoutDrivenForm({
           />
         );
 
+      case "time":
+        return (
+          <Input
+            type="time"
+            value={value || ""}
+            onChange={(e) => handleFieldChange(field.name, e.target.value || null)}
+            disabled={isDisabled}
+          />
+        );
+
       case "picklist":
         return (
           <Select
@@ -282,6 +323,7 @@ export default function LayoutDrivenForm({
         );
 
       case "longText":
+      case "richText":
         return (
           <Textarea
             value={value || ""}
@@ -301,6 +343,43 @@ export default function LayoutDrivenForm({
           />
         );
     }
+  };
+
+  const displayValue = (field: LayoutField, value: any): string => {
+    if (value === null || value === undefined || value === "") return "—";
+    if (field.fieldType === "boolean") return value ? "Yes" : "No";
+    if (field.fieldType === "date" || field.fieldType === "dateTime") {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime())
+        ? String(value)
+        : date.toLocaleString(undefined, field.fieldType === "date"
+          ? { year: "numeric", month: "2-digit", day: "2-digit" }
+          : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+    if (field.fieldType === "currency") {
+      const amount = Number(value);
+      return Number.isFinite(amount)
+        ? new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(amount)
+        : String(value);
+    }
+    if (field.fieldType === "picklist") {
+      return field.picklistValues?.find((option) => option.value === value)?.label || String(value);
+    }
+    if (field.fieldType === "multiPicklist" && Array.isArray(value)) {
+      return value
+        .map((item) => field.picklistValues?.find((option) => option.value === item)?.label || String(item))
+        .join(", ");
+    }
+    if (typeof value === "object") {
+      return String(value.name || value.label || value.displayName || value.id || "—");
+    }
+    if (field.fieldType === "lookup") {
+      const relation = data[field.name.replace(/Id$/, "")];
+      if (relation && typeof relation === "object") {
+        return String(relation.name || relation.title || relation.label || relation.recordNumber || value);
+      }
+    }
+    return String(value);
   };
 
   if (isLoading) {
@@ -352,25 +431,69 @@ export default function LayoutDrivenForm({
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
                 {visibleFields.map((field) => (
                   <div
                     key={field.name}
-                    className={`space-y-1.5 ${
-                      field.fieldType === "longText" ? "md:col-span-2" : ""
+                    className={`${
+                      field.fieldType === "longText" || field.fieldType === "richText"
+                        ? "md:col-span-2"
+                        : ""
                     }`}
                   >
-                    <Label className="text-sm">
-                      {field.label}
-                      {field.required && mode === "create" && (
-                        <span className="text-destructive ml-1">*</span>
-                      )}
-                    </Label>
-                    {renderField(field, data[field.name])}
-                    {fieldErrors?.[field.name] && (
-                      <p className="text-sm text-destructive" data-testid={`error-${field.name}`}>
-                        {fieldErrors[field.name]}
-                      </p>
+                    {mode === "detail" && editingField !== field.name ? (
+                      <div className="flex min-h-10 items-center justify-between gap-3 border-b py-2">
+                        <Label className="w-2/5 shrink-0 text-xs font-medium text-muted-foreground">
+                          {field.label}
+                        </Label>
+                        <div className="min-w-0 flex-1 break-words text-sm font-medium">
+                          {displayValue(field, data[field.name])}
+                          {fieldErrors?.[field.name] && (
+                            <p className="text-sm text-destructive" data-testid={`error-${field.name}`}>
+                              {fieldErrors[field.name]}
+                            </p>
+                          )}
+                        </div>
+                        {!editingField && onBeginEdit && field.editable && !field.isSystemField && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-muted-foreground"
+                            aria-label={`Edit ${field.label}`}
+                            onClick={() => onBeginEdit(field.name)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label className="text-sm">
+                            {field.label}
+                            {field.required && mode === "create" && (
+                              <span className="ml-1 text-destructive">*</span>
+                            )}
+                          </Label>
+                          {editingField === field.name && (
+                            <div className="flex shrink-0 items-center gap-2">
+                              <Button type="button" size="sm" onClick={onSaveField}>
+                                Save
+                              </Button>
+                              <Button type="button" size="sm" variant="outline" onClick={onCancelField}>
+                                Cancel
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                        {renderField(field, data[field.name])}
+                        {fieldErrors?.[field.name] && (
+                          <p className="text-sm text-destructive" data-testid={`error-${field.name}`}>
+                            {fieldErrors[field.name]}
+                          </p>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}

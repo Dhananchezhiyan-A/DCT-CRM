@@ -1,23 +1,19 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { RecordPageHeader } from "@/components/crm/record-page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FieldDisplay, FieldDefinition } from "./field-renderer";
 import {
-  ArrowLeft,
-  Edit,
   Trash2,
-  Calendar,
-  User,
   FileText,
   History,
+  Pencil,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface PageLayout {
   name: string;
@@ -140,7 +136,7 @@ export function DynamicDetail({
   );
 
   const getFieldByName = (name: string) =>
-    fields.find((f) => f.name === name);
+    displayFields.find((field) => field.name === name);
 
   const renderSection = (section: { name: string; fields: string[] }) => {
     const sectionFields = section.fields
@@ -156,19 +152,35 @@ export function DynamicDetail({
             {section.name}
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-2">
+        <CardContent className="pt-0">
+          <div className="grid gap-x-8 md:grid-cols-2">
             {sectionFields.map((field) => (
               <div
                 key={field.id}
-                className={
-                  field.fieldType === "longText" ? "md:col-span-2" : ""
-                }
+                className={`flex min-w-0 items-start justify-between gap-3 border-b py-2 ${
+                  field.fieldType === "longText" || field.fieldType === "richText"
+                    ? "md:col-span-2"
+                    : ""
+                }`}
               >
-                <FieldDisplay
-                  field={field}
-                  value={record.data?.[field.name] ?? record[field.name]}
-                />
+                <div className="min-w-0 flex-1">
+                  <FieldDisplay
+                    field={field}
+                    value={record.data?.[field.name] ?? record[field.name]}
+                  />
+                </div>
+                {canUpdate && onEdit && field.editable !== false && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground"
+                    aria-label={`Edit ${field.label}`}
+                    onClick={onEdit}
+                  >
+                    <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
+                )}
               </div>
             ))}
           </div>
@@ -186,38 +198,23 @@ export function DynamicDetail({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          {basePath && (
-            <Button variant="ghost" size="icon" asChild>
-              <Link href={basePath}>
-                <ArrowLeft className="h-4 w-4" />
-              </Link>
-            </Button>
-          )}
-          <div>
-            <h1 className="text-xl font-semibold">{recordTitle}</h1>
-            <p className="text-xs text-muted-foreground">
-              {objectLabel}
-              {record.recordNumber && ` • ${record.recordNumber}`}
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          {canUpdate && (
-            <Button variant="outline" onClick={onEdit}>
-              <Edit className="mr-2 h-4 w-4" />
-              Edit
-            </Button>
-          )}
-          {canDelete && (
-            <Button variant="destructive" onClick={onDelete}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </Button>
-          )}
-        </div>
-      </div>
+      <RecordPageHeader
+        objectLabel={objectLabel}
+        title={String(recordTitle)}
+        subtitle={record.recordNumber || record.data?.recordNumber}
+        backHref={basePath}
+        actions={
+          <>
+            {canUpdate && <Button variant="outline" onClick={onEdit}>Edit</Button>}
+            {canDelete && (
+              <Button variant="destructive" onClick={onDelete}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <Tabs defaultValue="details" className="space-y-4">
         <TabsList>

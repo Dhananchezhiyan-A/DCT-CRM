@@ -94,11 +94,20 @@ for local testing.
 3. Use a profile-specific test user above.
 4. Verify the displayed profile and test its effective permissions.
 
+### Channel Partner Portal
+
+The CP portal runs separately at `http://localhost:3002/login`. Its accounts
+are separate from CRM users and are not created by the CRM test-user seed.
+Sign in to the CRM as an administrator, open **Setup → CP Portal Accounts**,
+and create a portal account before signing in with its username or email and
+password.
+
 Local service URLs:
 
 - Web: `http://localhost:3000`
 - API: `http://localhost:3001`
 - AI: `http://localhost:8001`
+- CP Portal: `http://localhost:3002`
 
 ### Lead API test users
 

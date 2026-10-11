@@ -12,6 +12,7 @@ import {
   leadScopeClause,
 } from '../services/recordAccess';
 import { getNextSiteVisitNumber, normalizeOverdueSiteVisits } from '../services/leadWorkflowExtras';
+import { validateObjectCustomFields } from '../services/customFieldValidation';
 import {
   assignLeadToProjectRoundRobinInTransaction,
   assignSiteVisitToSVCInTransaction,
@@ -22,7 +23,6 @@ import {
   isLeadEligibleForAutoAssignment,
   RoundRobinAssignmentService,
 } from '../services/rrQueue';
-import { validateFieldValue } from '../services/metadata';
 import { changeLeadOwner, getEligibleLeadOwners } from '../services/leadOwnerChange';
 import { processLeadEnquiry, sourceEnumValue } from '../services/enquiryProcessing';
 import { getLeadEnquiries } from '../services/enquiryService';
@@ -46,58 +46,7 @@ async function validateLeadCustomFields(
   values: Record<string, unknown>,
   requireRequiredFields: boolean,
 ): Promise<string | null> {
-  const leadObject = await prisma.objectDefinition.findFirst({
-    where: { tenantId, name: 'Lead', isActive: true },
-    select: { id: true },
-  });
-  if (!leadObject) {
-    return Object.keys(values).length ? 'Lead field metadata is not configured' : null;
-  }
-
-  const definitions = await prisma.fieldDefinition.findMany({
-    where: {
-      tenantId,
-      objectId: leadObject.id,
-      isActive: true,
-      isCustomField: true,
-      isStandardField: false,
-    },
-    include: { picklistValues: { where: { isActive: true } } },
-  });
-  const definitionByName = new Map(definitions.map((field) => [field.name, field]));
-
-  for (const name of Object.keys(values)) {
-    if (!definitionByName.has(name)) return `Unknown Lead field: ${name}`;
-  }
-
-  for (const field of definitions) {
-    const hasValue = Object.prototype.hasOwnProperty.call(values, field.name);
-    if (!hasValue) {
-      if (requireRequiredFields && field.required) return `${field.label} is required`;
-      continue;
-    }
-    const value = values[field.name];
-    const validation = validateFieldValue(field, value);
-    if (!validation.valid) return validation.error || `Invalid value for ${field.label}`;
-    if (
-      field.fieldType === 'picklist' &&
-      value !== null &&
-      value !== undefined &&
-      value !== '' &&
-      !field.picklistValues.some((option) => option.value === value)
-    ) {
-      return `${field.label} has an invalid value`;
-    }
-    if (
-      field.fieldType === 'multiPicklist' &&
-      Array.isArray(value) &&
-      !value.every((option) => field.picklistValues.some((item) => item.value === option))
-    ) {
-      return `${field.label} has an invalid value`;
-    }
-  }
-
-  return null;
+  return validateObjectCustomFields(tenantId, 'Lead', values, requireRequiredFields);
 }
 
 /**
@@ -818,6 +767,7 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       campaign,
       subCampaignId,
       subCampaign,
+      salesUserId,
       secondaryPhone,
       tertiaryPhone,
       secondaryEmail,
@@ -837,6 +787,7 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       campaign: z.string().trim().max(160).optional(),
       subCampaignId: z.string().trim().optional(),
       subCampaign: z.string().trim().max(160).optional(),
+      salesUserId: z.string().trim().optional(),
       secondaryPhone: z.string().trim().max(64).optional(),
       tertiaryPhone: z.string().trim().max(64).optional(),
       secondaryEmail: z.string().trim().email().optional(),
@@ -853,7 +804,7 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
         notes: z.string().trim().max(5000).optional(),
       }).optional(),
     }).parse({
-      subSource, campaignId, campaign, subCampaignId, subCampaign,
+      subSource, campaignId, campaign, subCampaignId, subCampaign, salesUserId,
       secondaryPhone, tertiaryPhone, secondaryEmail, countryCode,
       secondaryCountryCode, medium, enquiryDescription, channelPartner,
       enquiryDate, enquiryDetails, siteVisit,
@@ -871,6 +822,15 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
     if (customFieldError) {
       return res.status(400).json({ success: false, error: customFieldError });
     }
+    if (metadata.salesUserId) {
+      const salesUser = await prisma.user.findFirst({
+        where: { id: metadata.salesUserId, tenantId: req.tenantId!, isActive: true },
+        select: { id: true, profile: { select: { name: true } } },
+      });
+      if (!salesUser || !/^sales(?:\b|$)/i.test(salesUser.profile?.name || '')) {
+        return res.status(400).json({ success: false, error: 'Select an active user with a Sales profile' });
+      }
+    }
     if (
       metadata.siteVisit &&
       !req.user!.isSuperAdmin &&
@@ -882,6 +842,7 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
     const result = await processLeadEnquiry({
       tenantId: req.tenantId!,
       userId: req.user!.id,
+      salesUserId: metadata.salesUserId,
       profileName: req.user!.profileName,
       lead: data,
       enquiry: {
@@ -922,7 +883,9 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       success: true,
       action: result.action,
       leadId: result.leadId,
-      data: result.lead,
+      data: result.lead
+        ? { ...result.lead, ...(result.assignmentWarning ? { assignmentWarning: result.assignmentWarning } : {}) }
+        : result.lead,
       validationDays: result.validationDays,
       daysDifference: result.daysDifference,
       assignment: result.assignment,
@@ -946,6 +909,9 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
     }
     if (error?.message === 'INVALID_PROJECT') {
       return res.status(400).json({ success: false, error: 'Invalid project' });
+    }
+    if (error?.message === 'SALES_USER_INVALID') {
+      return res.status(400).json({ success: false, error: 'Select an active user with a Sales profile' });
     }
     if (error?.message === 'RR_PROJECT_REQUIRED') {
       return res.status(409).json({ success: false, error: 'A project is required to assign this lead to Pre Sales.' });
@@ -1765,6 +1731,101 @@ router.get('/:id/owner-history', authorize('Lead', 'read'), async (req: AuthRequ
   } catch (error) {
     console.error('Get owner history error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch owner history' });
+  }
+});
+
+router.get('/:id/activity-history', authorize('Lead', 'read'), async (req: AuthRequest, res: Response) => {
+  try {
+    const page = Number(req.query.page ?? 1);
+    const limit = Number(req.query.limit ?? 100);
+    if (!Number.isInteger(page) || page < 1 || page > 100 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return res.status(400).json({ success: false, error: 'Invalid activity history page or limit' });
+    }
+
+    const lead = await prisma.lead.findFirst({
+      where: { id: req.params.id, ...leadIdScope(req) },
+      select: { id: true, tenantId: true, ownerId: true, creatorId: true },
+    });
+
+    if (!lead) {
+      return res.status(404).json({ success: false, error: 'Lead not found' });
+    }
+
+    if (!(await canAccessLead(req.user!, lead))) {
+      return res.status(403).json({ success: false, error: 'You do not have access to this lead' });
+    }
+
+    const where = { tenantId: lead.tenantId, leadId: lead.id };
+    const take = page * limit;
+    const [activityRecords, taskRecords, followUpRecords, activityCount, taskCount, followUpCount] = await Promise.all([
+      prisma.activity.findMany({
+        where,
+        include: {
+          user: { select: { id: true, firstName: true, lastName: true } },
+        },
+        take,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+      prisma.task.findMany({
+        where: { tenantId: lead.tenantId, leadId: lead.id },
+        include: {
+          owner: { select: { id: true, firstName: true, lastName: true } },
+        },
+        take,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+      prisma.followUp.findMany({
+        where: { tenantId: lead.tenantId, leadId: lead.id },
+        include: {
+          owner: { select: { id: true, firstName: true, lastName: true } },
+        },
+        take,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+      prisma.activity.count({ where }),
+      prisma.task.count({ where: { tenantId: lead.tenantId, leadId: lead.id } }),
+      prisma.followUp.count({ where: { tenantId: lead.tenantId, leadId: lead.id } }),
+    ]);
+    const combined = [
+      ...activityRecords.map((activity) => ({ ...activity, feedType: activity.type })),
+      ...taskRecords.map((task) => ({
+        ...task,
+        type: 'TASK',
+        subject: task.title,
+        notes: task.description,
+        createdAt: task.createdAt,
+        user: task.owner,
+        feedType: 'TASK',
+      })),
+      ...followUpRecords.map((followUp) => ({
+        ...followUp,
+        type: 'FOLLOW_UP',
+        subject: followUp.title,
+        notes: followUp.description,
+        status: followUp.isCompleted ? 'COMPLETED' : 'PLANNED',
+        createdAt: followUp.createdAt,
+        user: followUp.owner,
+        feedType: 'FOLLOW_UP',
+      })),
+    ].sort((first, second) =>
+      second.createdAt.getTime() - first.createdAt.getTime() || second.id.localeCompare(first.id),
+    );
+    const activities = combined.slice((page - 1) * limit, page * limit);
+    const totalEntries = activityCount + taskCount + followUpCount;
+
+    res.json({
+      success: true,
+      data: activities,
+      pagination: {
+        page,
+        limit,
+        total: totalEntries,
+        totalPages: Math.ceil(totalEntries / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Get lead activity history error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch lead activity history' });
   }
 });
 

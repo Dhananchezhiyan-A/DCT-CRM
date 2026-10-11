@@ -16,7 +16,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useToast } from "@/hooks/use-toast";
 import { taskApi } from "@/lib/api";
 
 interface Task {
@@ -30,6 +29,9 @@ interface Task {
   relatedTo?: string;
   relatedHref?: string;
   completedAt?: string;
+  salesforceStatus?: string;
+  callType?: string;
+  name?: string;
 }
 
 const priorityColors: Record<string, string> = {
@@ -124,6 +126,10 @@ const columns: ColumnDef<Task>[] = [
     header: "Assigned To",
   },
   {
+    accessorKey: "name",
+    header: "Name",
+  },
+  {
     accessorKey: "relatedTo",
     header: "Related To",
     cell: ({ row }) => {
@@ -136,6 +142,11 @@ const columns: ColumnDef<Task>[] = [
         </Link>
       );
     },
+  },
+  {
+      accessorKey: "callType",
+      header: "Call Type",
+      cell: ({ row }) => row.original.callType || "-",
   },
   {
     id: "actions",
@@ -168,16 +179,24 @@ function mapTask(item: any): Task {
     : "";
   let relatedTo: string | undefined;
   let relatedHref: string | undefined;
-  if (item.lead) {
-    relatedTo = `${item.lead.firstName || ""} ${item.lead.lastName || ""}`.trim() || item.lead.phone || undefined;
-    relatedHref = `/leads/${item.lead.id}`;
+  if (item.siteVisit) {
+    relatedTo = item.siteVisit.siteVisitNumber || "Site Visit";
+    relatedHref = `/site-visits/${item.siteVisit.id}`;
   } else if (item.opportunity) {
     relatedTo = item.opportunity.name;
     relatedHref = `/opportunities/${item.opportunity.id}`;
+  } else if (item.booking) {
+    relatedTo = item.booking.number || "Booking";
+    relatedHref = `/bookings/${item.booking.id}`;
+  } else if (item.project) {
+    relatedTo = item.project.name;
+    relatedHref = `/projects/${item.project.id}`;
+  } else if (item.unit) {
+    relatedTo = item.unit.number || "Unit";
   }
   return {
     id: item.id,
-    title: item.title,
+    title: item.subject || item.title,
     description: item.description || "",
     dueDate: item.dueDate || "",
     priority: item.priority,
@@ -186,11 +205,15 @@ function mapTask(item: any): Task {
     relatedTo,
     relatedHref,
     completedAt: item.completedAt,
+    salesforceStatus: item.salesforceStatus,
+    callType: item.callType,
+    name: item.lead
+      ? `${item.lead.firstName || ""} ${item.lead.lastName || ""}`.trim() || item.lead.phone
+      : undefined,
   };
 }
 
 export default function TasksPage() {
-  const { toast } = useToast();
   const [currentPage, setCurrentPage] = React.useState(1);
   const [filters, setFilters] = React.useState({ priority: "", status: "" });
   const [tasks, setTasks] = React.useState<Task[]>([]);
@@ -243,9 +266,11 @@ export default function TasksPage() {
             Manage your tasks and stay on top of your work
           </p>
         </div>
-        <Button onClick={() => toast({ title: "New Task", description: "Create task form coming soon" })}>
-          <Plus className="mr-2 h-4 w-4" />
-          New Task
+        <Button asChild>
+          <Link href="/tasks/new">
+            <Plus className="mr-2 h-4 w-4" />
+            New Task
+          </Link>
         </Button>
       </div>
 

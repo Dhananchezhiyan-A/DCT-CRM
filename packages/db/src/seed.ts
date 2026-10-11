@@ -449,13 +449,18 @@ async function main() {
 
   const standardObjects = [
     { name: 'Lead', label: 'Lead', pluralLabel: 'Leads', icon: 'user', description: 'Manage sales leads' },
+    { name: 'Enquiry', label: 'Enquiry', pluralLabel: 'Enquiries', icon: 'inbox', description: 'Manage lead enquiries' },
     { name: 'Opportunity', label: 'Opportunity', pluralLabel: 'Opportunities', icon: 'trending-up', description: 'Sales pipeline' },
     { name: 'SiteVisit', label: 'Site Visit', pluralLabel: 'Site Visits', icon: 'map-pin', description: 'Site visit scheduling' },
     { name: 'Quotation', label: 'Quotation', pluralLabel: 'Quotations', icon: 'file-text', description: 'Quotation management' },
     { name: 'Booking', label: 'Booking', pluralLabel: 'Bookings', icon: 'calendar-check', description: 'Booking management' },
     { name: 'Payment', label: 'Payment', pluralLabel: 'Payments', icon: 'credit-card', description: 'Payment tracking' },
     { name: 'Project', label: 'Project', pluralLabel: 'Projects', icon: 'folder-kanban', description: 'Project management' },
+    { name: 'Unit', label: 'Unit', pluralLabel: 'Units', icon: 'building', description: 'Manage project units' },
+    { name: 'Company', label: 'Company', pluralLabel: 'Companies', icon: 'building', description: 'Manage companies' },
     { name: 'Task', label: 'Task', pluralLabel: 'Tasks', icon: 'check-square', description: 'Task management' },
+    { name: 'FollowUp', label: 'Follow-up', pluralLabel: 'Follow-ups', icon: 'phone', description: 'Manage lead follow-ups' },
+    { name: 'Activity', label: 'Activity', pluralLabel: 'Activities', icon: 'activity', description: 'Track CRM activities' },
   ];
 
   const createdObjects: Record<string, any> = {};

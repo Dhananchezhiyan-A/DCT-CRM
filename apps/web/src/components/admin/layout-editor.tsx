@@ -132,6 +132,24 @@ export default function LayoutEditor({
     if (!destination) return;
 
     if (
+      source.droppableId === "layout-sections" ||
+      destination.droppableId === "layout-sections"
+    ) {
+      if (
+        source.droppableId === "layout-sections" &&
+        destination.droppableId === "layout-sections"
+      ) {
+        setSections((prev) => {
+          const reordered = Array.from(prev);
+          const [moved] = reordered.splice(source.index, 1);
+          reordered.splice(destination.index, 0, moved);
+          return reordered;
+        });
+      }
+      return;
+    }
+
+    if (
       source.droppableId === destination.droppableId &&
       source.index === destination.index
     ) {
@@ -325,22 +343,29 @@ export default function LayoutEditor({
 
           <div className="flex-1 overflow-y-auto p-6">
             <div className="space-y-4">
-              {sections.map((section, sectionIndex) => (
-                <Draggable
-                  key={`section-${sectionIndex}`}
-                  draggableId={`section-${sectionIndex}`}
-                  index={sectionIndex}
-                >
-                  {(provided, snapshot) => (
-                    <div
-                      ref={provided.innerRef}
-                      {...provided.draggableProps}
-                    >
-                      <Card
-                        className={`transition-shadow ${
-                          snapshot.isDragging ? "shadow-lg" : ""
-                        }`}
+              <Droppable droppableId="layout-sections">
+                {(sectionListProvided) => (
+                  <div
+                    ref={sectionListProvided.innerRef}
+                    {...sectionListProvided.droppableProps}
+                    className="space-y-4"
+                  >
+                    {sections.map((section, sectionIndex) => (
+                      <Draggable
+                        key={`section-${sectionIndex}`}
+                        draggableId={`section-${sectionIndex}`}
+                        index={sectionIndex}
                       >
+                        {(provided, snapshot) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                          >
+                            <Card
+                              className={`transition-shadow ${
+                                snapshot.isDragging ? "shadow-lg" : ""
+                              }`}
+                            >
                         <CardHeader className="pb-3">
                           <div className="flex items-center gap-2">
                             <div
@@ -491,11 +516,15 @@ export default function LayoutEditor({
                             </div>
                           )}
                         </CardContent>
-                      </Card>
-                    </div>
-                  )}
-                </Draggable>
-              ))}
+                            </Card>
+                          </div>
+                        )}
+                      </Draggable>
+                    ))}
+                    {sectionListProvided.placeholder}
+                  </div>
+                )}
+              </Droppable>
 
               <div className="flex items-center gap-2 pt-2">
                 <Input

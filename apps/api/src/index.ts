@@ -53,6 +53,7 @@ import setupCompanySettingsRouter from './routes/setup/company-settings';
 import setupPersonalSettingsRouter from './routes/setup/personal-settings';
 import profileSecurityRouter from './routes/profileSecurity';
 import rrQueueRouter from './routes/rrQueues';
+import notesRouter from './routes/notes';
 import cpPortalRouter from './routes/cpPortal';
 import cpPortalAccountsRouter from './routes/cpPortalAccounts';
 
@@ -139,6 +140,7 @@ export const createApp = () => {
   app.use('/api/data-administration', dataAdministrationRouter);
   app.use('/api/profile-security', profileSecurityRouter);
   app.use('/api/rrqueues', rrQueueRouter);
+  app.use('/api/notes', notesRouter);
   app.use('/api/gre', greRouter);
 
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

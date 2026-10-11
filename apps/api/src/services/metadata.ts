@@ -261,7 +261,12 @@ export function validateFieldValue(fieldDef: any, value: any): { valid: boolean;
   switch (fieldDef.fieldType) {
     case 'text':
     case 'longText':
+    case 'richText':
       if (typeof value !== 'string') return { valid: false, error: `${fieldDef.label} must be text` };
+      break;
+    case 'time':
+      if (!/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?$/.test(String(value)))
+        return { valid: false, error: `${fieldDef.label} must be a valid time` };
       break;
     case 'number':
       if (isNaN(Number(value))) return { valid: false, error: `${fieldDef.label} must be a number` };

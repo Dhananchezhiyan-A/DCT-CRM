@@ -1,4 +1,3 @@
-
 "use client";
 
 import * as React from "react";
@@ -91,9 +90,14 @@ export function getLeadColumns({
     {
       accessorKey: "leadNumber",
       header: "Lead Number",
-      cell: ({ row }) => (
-        <span className="font-mono text-sm">{row.getValue("leadNumber")}</span>
-      ),
+      cell: ({ row }) => {
+        const lead = row.original;
+        return (
+          <Link href={`/leads/${lead.id}`} className="font-mono text-sm font-medium text-primary hover:underline">
+            {lead.leadNumber || "—"}
+          </Link>
+        );
+      },
     },
     {
       accessorKey: "firstName",

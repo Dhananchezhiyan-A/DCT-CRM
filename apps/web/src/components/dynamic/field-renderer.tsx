@@ -629,11 +629,11 @@ export function FieldDisplay({
   const badge = renderBadge();
 
   return (
-    <div className="space-y-1">
+    <div className="grid min-w-0 grid-cols-[minmax(0,2fr)_minmax(0,3fr)] items-start gap-3">
       <Label className="text-xs font-medium text-muted-foreground">
         {field.label}
       </Label>
-      <div className="py-1 text-[13px] font-medium">
+      <div className="min-w-0 break-words py-1 text-[13px] font-medium">
         {badge || formatDisplayValue(value)}
       </div>
     </div>

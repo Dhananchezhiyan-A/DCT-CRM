@@ -43,6 +43,7 @@ export const STATUS_TRANSITIONS: Record<string, { next: LeadStatus; profiles: st
   ],
   [LeadStatus.SITE_VISIT_HAPPENED]: [
     { next: LeadStatus.BOOKED, profiles: ['CRM', 'Sales', 'Sales Executive', 'Admin', 'CRM Admin', 'Manager'] },
+    { next: LeadStatus.LOST, profiles: ['CRM', 'Sales', 'Sales Executive', 'Admin', 'CRM Admin', 'Manager'] },
   ],
   [LeadStatus.BOOKED]: [],
   [LeadStatus.LOST]: [

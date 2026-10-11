@@ -7,10 +7,11 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:ai\"",
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:ai\" \"npm run dev:cp-portal\"",
     "dev:web": "npm run dev --workspace=apps/web",
     "dev:api": "npm run dev --workspace=apps/api",
     "dev:ai": "cd apps/ai && python -m uvicorn main:app --reload --port 8001",
+    "dev:cp-portal": "npm run dev --workspace=apps/cp-portal",
     "build": "npm run build --workspaces --if-present",
     "build:web": "npm run build --workspace=apps/web",
     "build:api": "npm run build --workspace=apps/api",

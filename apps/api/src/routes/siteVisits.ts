@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@dct-crm/db';
 import { crmDateToUtcStart } from '@dct-crm/shared';
 import { z } from 'zod';
@@ -20,6 +21,7 @@ import {
   findApplicableRRQueue,
   RoundRobinAssignmentService,
 } from '../services/rrQueue';
+import { validateObjectCustomFields } from '../services/customFieldValidation';
 
 const router = Router();
 
@@ -35,6 +37,7 @@ const siteVisitSchema = z.object({
   notes: z.string().min(1, 'Note/reason is required').max(2000),
   feedback: z.string().max(1000).optional(),
   rating: z.number().int().min(1).max(5).optional(),
+  customFields: z.record(z.unknown()).optional(),
 });
 
 const updateSiteVisitSchema = siteVisitSchema.partial();
@@ -185,10 +188,65 @@ router.get('/:id', authorize('SiteVisit', 'read'), async (req: AuthRequest, res:
   }
 });
 
+router.get('/:id/history', authorize('SiteVisit', 'read'), async (req: AuthRequest, res: Response) => {
+  try {
+    const page = Number(req.query.page ?? 1);
+    const limit = Number(req.query.limit ?? 100);
+    if (!Number.isInteger(page) || page < 1 || page > 100 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return res.status(400).json({ success: false, error: 'Invalid site visit history page or limit' });
+    }
+
+    const siteVisit = await prisma.siteVisit.findFirst({
+      where: { id: req.params.id, tenantId: req.user!.tenantId },
+      select: { id: true, leadId: true, tenantId: true, assigneeId: true, creatorId: true },
+    });
+
+    if (!siteVisit) {
+      return res.status(404).json({ success: false, error: 'Site visit not found' });
+    }
+    if (!(await canAccessSiteVisit(req.user!, siteVisit))) {
+      return res.status(403).json({ success: false, error: 'You do not have access to this site visit' });
+    }
+
+    const where = {
+      tenantId: siteVisit.tenantId,
+      objectType: 'SiteVisit',
+      objectId: siteVisit.id,
+    };
+    const [entries, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        include: {
+          user: { select: { id: true, firstName: true, lastName: true } },
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+      prisma.auditLog.count({ where }),
+    ]);
+
+    res.json({
+      success: true,
+      data: entries,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (error) {
+    console.error('Get site visit history error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch site visit history' });
+  }
+});
+
 router.post('/', authorize('SiteVisit', 'create'), async (req: AuthRequest, res: Response) => {
   try {
     const { tenantId, id: userId } = req.user!;
     const data = siteVisitSchema.parse(req.body);
+    const customFieldError = data.customFields
+      ? await validateObjectCustomFields(tenantId, 'SiteVisit', data.customFields, false)
+      : null;
+    if (customFieldError) {
+      return res.status(400).json({ success: false, error: customFieldError });
+    }
 
     const lead = await prisma.lead.findFirst({
       where: { id: data.leadId, tenantId },
@@ -234,6 +292,7 @@ router.post('/', authorize('SiteVisit', 'create'), async (req: AuthRequest, res:
           notes: data.notes,
           feedback: data.feedback,
           rating: data.rating,
+          customFields: (data.customFields || {}) as Prisma.InputJsonObject,
         },
         select: { id: true },
       });
@@ -328,12 +387,31 @@ router.put('/:id', authorize('SiteVisit', 'edit'), async (req: AuthRequest, res:
     }
 
     const data = updateSiteVisitSchema.parse(req.body);
+    if (data.customFields) {
+      const customFieldError = await validateObjectCustomFields(
+        tenantId,
+        'SiteVisit',
+        data.customFields,
+        false,
+      );
+      if (customFieldError) {
+        return res.status(400).json({ success: false, error: customFieldError });
+      }
+      const storedCustomFields = existing.customFields;
+      data.customFields = {
+        ...(storedCustomFields && typeof storedCustomFields === 'object' && !Array.isArray(storedCustomFields)
+          ? storedCustomFields as Record<string, unknown>
+          : {}),
+        ...data.customFields,
+      };
+    }
     if (data.status === 'COMPLETED') {
       return res.status(400).json({ success: false, error: 'Use the completion action to complete a site visit.' });
     }
 
     const updateData: Record<string, unknown> = { ...data };
     if (data.scheduledAt) updateData.scheduledAt = new Date(data.scheduledAt);
+    if (data.customFields) updateData.customFields = data.customFields as Prisma.InputJsonObject;
 
     const projectChanged = !!data.projectId && data.projectId !== existing.projectId;
     if (projectChanged) {

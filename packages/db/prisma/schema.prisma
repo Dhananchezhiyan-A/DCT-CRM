@@ -151,7 +151,9 @@ model User {
   cancelledSiteVisits      SiteVisit[]                @relation("SvCancelledBy")
   assignedBookings         Booking[]                  @relation("BookingOwner")
   createdBookings          Booking[]                  @relation("BookingCreator")
-  tasks                    Task[]
+  tasks                    Task[]                     @relation("TaskOwner")
+  createdTasks             Task[]                     @relation("TaskCreator")
+  modifiedTasks            Task[]                     @relation("TaskLastModifiedBy")
   followUps                FollowUp[]
   activities               Activity[]
   assignedActivities       Activity[]                 @relation("ActivityAssignee")
@@ -700,6 +702,7 @@ model Lead {
   source                LeadSource @default(OTHER)
   status                LeadStatus @default(NEW)
   rating                Rating?
+  leadInterest          String?
   description           String?
   score                 Int        @default(0)
   budget                Float?
@@ -1097,6 +1100,7 @@ model SiteVisit {
   cancelledBy        User?           @relation("SvCancelledBy", fields: [cancelledById], references: [id])
   rating             Int?
   notes              String?
+  customFields       Json            @default("{}")
   visitorCount       Int?
   visitType          String?
   transportRequired  Boolean?
@@ -1303,6 +1307,7 @@ model Booking {
 
   payments   Payment[]
   activities Activity[]
+  tasks      Task[]
   auditLogs  AuditLog[]
 
   @@unique([tenantId, number])
@@ -1387,6 +1392,7 @@ model Project {
   opportunities Opportunity[]
   quotations    Quotation[]
   bookings      Booking[]
+  tasks         Task[]
   rrQueues      RRQueue[]  @relation("RRQueueProject")
 
   @@unique([tenantId, name])
@@ -1410,6 +1416,7 @@ model Unit {
 
   quotationItems QuotationItem[]
   bookings       Booking[]
+  tasks          Task[]
   opportunities  Opportunity[]
 
   @@unique([tenantId, projectId, number])
@@ -1446,22 +1453,55 @@ model Task {
   siteVisit     SiteVisit?   @relation(fields: [siteVisitId], references: [id])
   opportunityId String?
   opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+  bookingId     String?
+  booking       Booking?     @relation(fields: [bookingId], references: [id])
+  projectId     String?
+  project       Project?     @relation(fields: [projectId], references: [id])
+  unitId        String?
+  unit          Unit?        @relation(fields: [unitId], references: [id])
   ownerId       String
-  owner         User         @relation(fields: [ownerId], references: [id])
+  owner         User         @relation("TaskOwner", fields: [ownerId], references: [id])
+  createdById   String?
+  createdBy     User?        @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  lastModifiedById String?
+  lastModifiedBy   User?     @relation("TaskLastModifiedBy", fields: [lastModifiedById], references: [id], onDelete: SetNull)
 
-  title       String
-  description String?
-  status      TaskStatus   @default(PENDING)
-  priority    TaskPriority @default(MEDIUM)
-  dueDate     DateTime?
-  completedAt DateTime?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  title                     String
+  subject                   String?
+  description               String?
+  status                    TaskStatus   @default(PENDING)
+  salesforceStatus          String?
+  priority                  TaskPriority @default(MEDIUM)
+  salesforcePriority        String?
+  dueDate                   DateTime?
+  completedAt               DateTime?
+  callDurationInSeconds     Int?
+  callObject                String?
+  callDisposition           String?
+  callType                  String?
+  isRecurrence              Boolean      @default(false)
+  recurrenceInterval        Int?
+  email                     String?
+  phone                     String?
+  isVisibleInSelfService    Boolean      @default(false)
+  isReminderSet             Boolean      @default(false)
+  recurrenceRegeneratedType String?
+  taskSubtype               String?
+  taskType                  String?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
 
   @@index([tenantId])
   @@index([tenantId, ownerId])
   @@index([tenantId, status])
+  @@index([tenantId, dueDate])
   @@index([leadId])
+  @@index([siteVisitId])
+  @@index([opportunityId])
+  @@index([bookingId])
+  @@index([projectId])
+  @@index([unitId])
+  @@index([createdById])
 }
 
 model FollowUp {
