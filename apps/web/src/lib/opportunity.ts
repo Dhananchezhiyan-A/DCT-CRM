@@ -27,6 +27,7 @@ export interface OpportunityGreRegistration {
 
 export interface OpportunityApiRecord {
   id: string;
+  opportunityNumber?: string | null;
   name: string | null;
   amount: number | null;
   stage: string | null;
@@ -48,8 +49,21 @@ export interface OpportunityApiRecord {
     company: string | null;
     budget: number | null;
     preferredLocation: string | null;
+    status?: string | null;
+    street?: string | null;
+    city?: string | null;
+    stateProvince?: string | null;
+    postalCode?: string | null;
+    country?: string | null;
     project: { id: string; name: string } | null;
   } | null;
+  project?: { id: string; name: string; city?: string | null; address?: string | null } | null;
+  unit?: { id: string; number: string; type?: string | null; area?: number | null; price?: number | null } | null;
+  siteVisit?: { id: string; siteVisitNumber: string | null; status: string; completedAt?: string | null } | null;
+  quotations?: Array<{ id: string; number: string; totalAmount: number; status: string }>;
+  bookings?: Array<{ id: string; number: string; status: string; totalAmount: number }>;
+  activities?: unknown[];
+  tasks?: unknown[];
   greRegistration?: OpportunityGreRegistration | null;
 }
 
@@ -65,7 +79,15 @@ export interface OpportunityView {
   createdAt: string;
   updatedAt: string;
   currency?: string;
+  opportunityNumber?: string | null;
   lead: OpportunityApiRecord["lead"];
+  project: OpportunityApiRecord["project"];
+  unit: OpportunityApiRecord["unit"];
+  siteVisit: OpportunityApiRecord["siteVisit"];
+  quotations: NonNullable<OpportunityApiRecord["quotations"]>;
+  bookings: NonNullable<OpportunityApiRecord["bookings"]>;
+  activities: NonNullable<OpportunityApiRecord["activities"]>;
+  tasks: NonNullable<OpportunityApiRecord["tasks"]>;
   greRegistration: OpportunityGreRegistration | null;
 }
 
@@ -84,7 +106,15 @@ export function mapOpportunity(item: OpportunityApiRecord): OpportunityView {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     currency: "INR",
+    opportunityNumber: item.opportunityNumber,
     lead: item.lead || null,
+    project: item.project || null,
+    unit: item.unit || null,
+    siteVisit: item.siteVisit || null,
+    quotations: item.quotations || [],
+    bookings: item.bookings || [],
+    activities: item.activities || [],
+    tasks: item.tasks || [],
     greRegistration: item.greRegistration || null,
   };
 }

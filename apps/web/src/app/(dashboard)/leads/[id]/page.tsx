@@ -5,14 +5,36 @@ import { crmLocalDateTimeToDate } from "@dct-crm/shared";
 
 import * as React from "react";
 
+import Link from "next/link";
+
 import { useParams, useRouter } from "next/navigation";
 
 import { useAuth } from "@/contexts/auth-context";
 
-import { leadApi, siteVisitApi, opportunityApi, activityApi, taskApi, followUpApi, objectManagerApi, projectApi, unitApi, quotationApi, bookingApi } from "@/lib/api";
+import { leadApi, siteVisitApi, opportunityApi, activityApi, callDetailsApi, taskApi, followUpApi, objectManagerApi, projectApi, unitApi, quotationApi, bookingApi, enquiryApi, notesApi } from "@/lib/api";
+import { formatPhoneWithCountryCode } from "@/lib/phone-display";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { getCurrentCoordinates, getGeolocationPermission, getLocationSettingsInstructions } from "@/lib/geolocation";
 
 import LayoutDrivenForm from "@/components/admin/layout-driven-form";
+import LeadActivityHistoryCard from "@/components/crm/lead-activity-history-card";
+import StickyNotesCard from "@/components/crm/sticky-notes-card";
 
 import { useToast } from "@/hooks/use-toast";
 
@@ -72,6 +94,10 @@ import {
   Edit3,
   Save,
   X,
+  Monitor,
+  ChevronDown,
+  MoreHorizontal,
+  Trash2,
 } from "lucide-react";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -80,7 +106,7 @@ const STATUS_LABELS: Record<string, string> = {
   PROSPECT: "Prospect",
   SITE_VISIT_SCHEDULED: "Site Visit Scheduled",
   SITE_VISIT_HAPPENED: "Site Visit Happened",
-  BOOKED: "Booked",
+  BOOKED: "Converted",
   LOST: "Lost",
 };
 
@@ -109,8 +135,8 @@ const LEAD_STATUS_PROGRESSION = [
   { key: "PROSPECT", label: "Prospect" },
   { key: "SITE_VISIT_SCHEDULED", label: "Site Visit Scheduled" },
   { key: "SITE_VISIT_HAPPENED", label: "Site Visit Happened" },
-  { key: "BOOKED", label: "Booked" },
   { key: "LOST", label: "Lost" },
+  { key: "BOOKED", label: "Converted" },
 ];
 
 interface LeadData {
@@ -123,6 +149,8 @@ interface LeadData {
   email?: string;
   phone?: string;
   mobile?: string;
+  secondaryPhone?: string | null;
+  tertiaryPhone?: string | null;
   website?: string;
   company: string;
   industry?: string;
@@ -141,6 +169,7 @@ interface LeadData {
   postalCode?: string;
   requirements?: string;
   notes?: string;
+  customFields?: Record<string, unknown>;
   owner?: { id: string; firstName: string; lastName: string };
   creator?: { id: string; firstName: string; lastName: string };
   project?: { id: string; name: string; allowedRadiusMeters?: number };
@@ -164,12 +193,62 @@ interface LeadData {
 interface LeadEnquiry {
   id: string;
   enquiryNumber: string;
+  leadType: string;
   enquiryType: string;
   source: string;
   subSource?: string | null;
+  phone?: string | null;
+  countryCode?: string | null;
+  secondaryPhone?: string | null;
+  secondaryCountryCode?: string | null;
+  tertiaryPhone?: string | null;
+  tertiaryCountryCode?: string | null;
+  email?: string | null;
+  secondaryEmail?: string | null;
+  tertiaryEmail?: string | null;
+  campaign?: string | null;
+  campaignId?: string | null;
+  subCampaign?: string | null;
+  subCampaignId?: string | null;
+  medium?: string | null;
+  description?: string | null;
+  channelPartner?: string | null;
   project?: { id: string; name: string } | null;
   enquiryDate: string;
   createdAt: string;
+}
+
+interface EnquiryEditDraft {
+  leadType: string;
+  source: string;
+  subSource: string;
+  campaign: string;
+  campaignId: string;
+  subCampaign: string;
+  subCampaignId: string;
+  projectId: string;
+  countryCode: string;
+  phone: string;
+  secondaryCountryCode: string;
+  secondaryPhone: string;
+  tertiaryCountryCode: string;
+  tertiaryPhone: string;
+  email: string;
+  secondaryEmail: string;
+  tertiaryEmail: string;
+  medium: string;
+  channelPartner: string;
+  description: string;
+  enquiryDate: string;
+}
+
+interface PushSvcLeadDraft {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  company: string;
+  email: string;
+  projectId: string;
 }
 
 const LEAD_EDITABLE_FIELDS = [
@@ -201,6 +280,20 @@ const LEAD_EDITABLE_FIELDS = [
   "projectId",
 ] as const;
 
+const formatLeadTypeLabel = (leadType?: string | null) => {
+  switch (leadType) {
+    case "ORIGINAL":
+    case "ADDITIONAL":
+      return "Fresh";
+    case "RE_ENGAGED":
+      return "Re-Engaged";
+    case "RE_OPENED":
+      return "Re-Opened";
+    default:
+      return leadType ? leadType.replaceAll("_", " ") : "—";
+  }
+};
+
 export default function LeadDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -223,6 +316,20 @@ export default function LeadDetailPage() {
   const [followUpNote, setFollowUpNote] = React.useState("");
   const [followUpDate, setFollowUpDate] = React.useState("");
   const [followUpTime, setFollowUpTime] = React.useState("");
+  const [callDialogOpen, setCallDialogOpen] = React.useState(false);
+  const [callType, setCallType] = React.useState<"INBOUND" | "OUTBOUND">("OUTBOUND");
+  const [callStartAt, setCallStartAt] = React.useState("");
+  const [callEndAt, setCallEndAt] = React.useState("");
+  const [callFrom, setCallFrom] = React.useState("");
+  const [callTo, setCallTo] = React.useState("");
+  const [callOpportunityId, setCallOpportunityId] = React.useState("");
+  const [executiveContactNo, setExecutiveContactNo] = React.useState("");
+  const [landingNumber, setLandingNumber] = React.useState("");
+  const [recordingFile, setRecordingFile] = React.useState("");
+  const [callStatus, setCallStatus] = React.useState("COMPLETED");
+  const [callNotes, setCallNotes] = React.useState("");
+  const [callSaving, setCallSaving] = React.useState(false);
+  const [stickyNotesRefresh, setStickyNotesRefresh] = React.useState(0);
 
   const [taskDialogOpen, setTaskDialogOpen] = React.useState(false);
   const [taskNote, setTaskNote] = React.useState("");
@@ -246,6 +353,15 @@ export default function LeadDetailPage() {
 
   const [pushSvcDialogOpen, setPushSvcDialogOpen] = React.useState(false);
   const [pushSvcReason, setPushSvcReason] = React.useState("");
+  const [pushSvcLeadEditing, setPushSvcLeadEditing] = React.useState(false);
+  const [pushSvcLeadDraft, setPushSvcLeadDraft] = React.useState<PushSvcLeadDraft>({
+    firstName: "",
+    lastName: "",
+    phone: "",
+    company: "",
+    email: "",
+    projectId: "",
+  });
 
   const [auditLogs, setAuditLogs] = React.useState<any[]>([]);
   const [auditPage, setAuditPage] = React.useState(1);
@@ -255,11 +371,29 @@ export default function LeadDetailPage() {
   const [enquiries, setEnquiries] = React.useState<LeadEnquiry[]>([]);
   const [enquiriesLoading, setEnquiriesLoading] = React.useState(false);
   const [enquiriesError, setEnquiriesError] = React.useState<string | null>(null);
+  const [showAllEnquiries, setShowAllEnquiries] = React.useState(false);
+  const [leadBookings, setLeadBookings] = React.useState<any[]>([]);
+  const [leadBookingsLoading, setLeadBookingsLoading] = React.useState(false);
+  const [leadBookingsError, setLeadBookingsError] = React.useState<string | null>(null);
+  const [callDetails, setCallDetails] = React.useState<any[]>([]);
+  const [callDetailsLoading, setCallDetailsLoading] = React.useState(false);
+  const [callDetailsError, setCallDetailsError] = React.useState<string | null>(null);
+  const [showAllSiteVisits, setShowAllSiteVisits] = React.useState(false);
+  const [showAllLeadBookings, setShowAllLeadBookings] = React.useState(false);
+  const [showAllCallDetails, setShowAllCallDetails] = React.useState(false);
+  const [showAllFeedbacks, setShowAllFeedbacks] = React.useState(false);
+  const [editingEnquiry, setEditingEnquiry] = React.useState<LeadEnquiry | null>(null);
+  const [enquiryEditDraft, setEnquiryEditDraft] = React.useState<EnquiryEditDraft | null>(null);
+  const [enquiryEditProjects, setEnquiryEditProjects] = React.useState<Array<{ id: string; name: string }>>([]);
+  const [enquiryEditProjectsLoading, setEnquiryEditProjectsLoading] = React.useState(false);
+  const [enquiryEditError, setEnquiryEditError] = React.useState<string | null>(null);
+  const [enquirySaveLoading, setEnquirySaveLoading] = React.useState(false);
+  const [enquiryDeleteTarget, setEnquiryDeleteTarget] = React.useState<LeadEnquiry | null>(null);
+  const [enquiryDeleteLoading, setEnquiryDeleteLoading] = React.useState(false);
 
   const [isEditing, setIsEditing] = React.useState(false);
   const [editData, setEditData] = React.useState<Record<string, any>>({});
   const [editFieldErrors, setEditFieldErrors] = React.useState<Record<string, string>>({});
-  const [editReason, setEditReason] = React.useState("");
 
   const [revisitDialogOpen, setRevisitDialogOpen] = React.useState(false);
   const [revisitReason, setRevisitReason] = React.useState("");
@@ -391,6 +525,234 @@ export default function LeadDetailPage() {
     }
   }, [leadId]);
 
+  const fetchLeadBookings = React.useCallback(async () => {
+    setLeadBookingsLoading(true);
+    setLeadBookingsError(null);
+    try {
+      const response = await bookingApi.list({ leadId, page: 1, limit: 100 });
+      if (!response.data.success) {
+        throw new Error(response.data.error || "Failed to load bookings");
+      }
+      setLeadBookings(response.data.data || []);
+    } catch (error: any) {
+      setLeadBookingsError(error?.response?.data?.error || error?.message || "Failed to load bookings.");
+    } finally {
+      setLeadBookingsLoading(false);
+    }
+  }, [leadId]);
+
+  const fetchCallDetails = React.useCallback(async () => {
+    setCallDetailsLoading(true);
+    setCallDetailsError(null);
+    try {
+      const [activityResponse, callDetailsResponse] = await Promise.all([
+        activityApi.list({ leadId, type: "CALL", page: 1, limit: 100 }),
+        callDetailsApi.list(leadId),
+      ]);
+      if (!activityResponse.data.success || !callDetailsResponse.data.success) {
+        throw new Error(activityResponse.data.error || callDetailsResponse.data.error || "Failed to load call details");
+      }
+      setCallDetails([
+        ...(callDetailsResponse.data.data || []).map((call: any) => ({ ...call, recordType: "CALL_DETAIL" })),
+        ...(activityResponse.data.data || []).map((call: any) => ({ ...call, recordType: "ACTIVITY" })),
+      ].sort((left: any, right: any) => new Date(right.startAt || right.createdAt).getTime() - new Date(left.startAt || left.createdAt).getTime()));
+    } catch (error: any) {
+      setCallDetailsError(error?.response?.data?.error || error?.message || "Failed to load call details.");
+    } finally {
+      setCallDetailsLoading(false);
+    }
+  }, [leadId]);
+
+  const openCallDialog = () => {
+    const now = new Date();
+    const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    setCallType("OUTBOUND");
+    setCallStartAt(localNow);
+    setCallEndAt("");
+    setCallFrom("");
+    setCallTo(lead?.phone || lead?.mobile || "");
+    setCallOpportunityId(lead?.opportunities?.[0]?.id || "");
+    setExecutiveContactNo(lead?.phone || lead?.mobile || "");
+    setLandingNumber("");
+    setRecordingFile("");
+    setCallStatus("COMPLETED");
+    setCallNotes("");
+    setCallDialogOpen(true);
+  };
+
+  const handleLogCall = async () => {
+    if (!callStartAt || !callEndAt) {
+      toast({ title: "Call details required", description: "Enter both the call start time and end time.", variant: "destructive" });
+      return;
+    }
+    const startAt = crmLocalDateTimeToDate(callStartAt.slice(0, 10), callStartAt.slice(11, 16));
+    const endAt = crmLocalDateTimeToDate(callEndAt.slice(0, 10), callEndAt.slice(11, 16));
+    if (!Number.isFinite(startAt.getTime()) || !Number.isFinite(endAt.getTime()) || endAt <= startAt) {
+      toast({ title: "Invalid call time", description: "The end time must be after the start time.", variant: "destructive" });
+      return;
+    }
+
+    setCallSaving(true);
+    try {
+      await callDetailsApi.create({
+        leadId,
+        caseId: leadId,
+        ...(callOpportunityId ? { opportunityId: callOpportunityId } : {}),
+        callType,
+        callFrom: callFrom.trim(),
+        callTo: callTo.trim(),
+        startAt: startAt.toISOString(),
+        endAt: endAt.toISOString(),
+        executiveContactNo: executiveContactNo.trim(),
+        landingNumber: landingNumber.trim(),
+        status: callStatus,
+        parentId: leadId,
+        parentUrl: new URL(`/leads/${leadId}`, window.location.origin).toString(),
+        ...(recordingFile.trim() ? { recordingFile: recordingFile.trim() } : {}),
+        notes: callNotes.trim() || undefined,
+      });
+
+      setCallDialogOpen(false);
+      await fetchCallDetails();
+      if (callNotes.trim()) {
+        try {
+          const noteResponse = await notesApi.add(leadId, `${callType === "INBOUND" ? "Inbound" : "Outbound"} call notes:\n${callNotes.trim()}`);
+          if (!noteResponse.data.success) throw new Error(noteResponse.data.error || "Sticky Note could not be saved.");
+          setStickyNotesRefresh((current) => current + 1);
+          toast({ title: "Call logged", description: "Call details saved and notes added to Sticky Notes." });
+        } catch (noteError: any) {
+          toast({
+            title: "Call saved, but Sticky Note was not added",
+            description: noteError?.response?.data?.error || "Please add the call notes to Sticky Notes manually.",
+            variant: "destructive",
+          });
+        }
+      } else {
+        toast({ title: "Call logged", description: "Call details saved successfully." });
+      }
+      setActiveTab("call-details");
+    } catch (error: any) {
+      toast({
+        title: "Unable to log call",
+        description: error?.response?.data?.error || error?.message || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setCallSaving(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (activeTab === "bookings") void fetchLeadBookings();
+    if (activeTab === "call-details") void fetchCallDetails();
+  }, [activeTab, fetchCallDetails, fetchLeadBookings]);
+
+  const openEnquiryEditor = React.useCallback(async (enquiry: LeadEnquiry) => {
+    setEnquiryEditError(null);
+    setEditingEnquiry(enquiry);
+    setEnquiryEditDraft({
+      leadType: enquiry.leadType === "ADDITIONAL" ? "ORIGINAL" : enquiry.leadType || "ORIGINAL",
+      source: enquiry.source || "",
+      subSource: enquiry.subSource || "",
+      campaign: enquiry.campaign || "",
+      campaignId: enquiry.campaignId || "",
+      subCampaign: enquiry.subCampaign || "",
+      subCampaignId: enquiry.subCampaignId || "",
+      projectId: enquiry.project?.id || "",
+      countryCode: enquiry.countryCode || "",
+      phone: enquiry.phone || "",
+      secondaryCountryCode: enquiry.secondaryCountryCode || "",
+      secondaryPhone: enquiry.secondaryPhone || "",
+      tertiaryCountryCode: enquiry.tertiaryCountryCode || "",
+      tertiaryPhone: enquiry.tertiaryPhone || "",
+      email: enquiry.email || "",
+      secondaryEmail: enquiry.secondaryEmail || "",
+      tertiaryEmail: enquiry.tertiaryEmail || "",
+      medium: enquiry.medium || "",
+      channelPartner: enquiry.channelPartner || "",
+      description: enquiry.description || "",
+      enquiryDate: enquiry.enquiryDate
+        ? new Date(new Date(enquiry.enquiryDate).getTime() - new Date(enquiry.enquiryDate).getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+        : "",
+    });
+    setEnquiryEditProjectsLoading(true);
+    try {
+      const projectList = await projectApi.listAll({ isActive: true });
+      setEnquiryEditProjects(projectList);
+    } catch (error: any) {
+      setEnquiryEditError(error?.response?.data?.error || "Unable to load projects.");
+    } finally {
+      setEnquiryEditProjectsLoading(false);
+    }
+  }, []);
+
+  const updateEnquiryDraft = <K extends keyof EnquiryEditDraft>(field: K, value: EnquiryEditDraft[K]) => {
+    setEnquiryEditDraft((current) => current ? { ...current, [field]: value } : current);
+    setEnquiryEditError(null);
+  };
+
+  const saveEnquiryEdits = async () => {
+    if (!editingEnquiry || !enquiryEditDraft) return;
+    setEnquirySaveLoading(true);
+    setEnquiryEditError(null);
+    try {
+      const response = await enquiryApi.update(editingEnquiry.id, {
+        ...enquiryEditDraft,
+        campaignId: enquiryEditDraft.campaignId || null,
+        campaign: enquiryEditDraft.campaign.trim() || null,
+        subSource: enquiryEditDraft.subSource.trim() || null,
+        subCampaignId: enquiryEditDraft.subCampaignId || null,
+        subCampaign: enquiryEditDraft.subCampaign.trim() || null,
+        projectId: enquiryEditDraft.projectId || null,
+        countryCode: enquiryEditDraft.countryCode.trim() || null,
+        phone: enquiryEditDraft.phone.trim() || null,
+        secondaryCountryCode: enquiryEditDraft.secondaryCountryCode.trim() || null,
+        secondaryPhone: enquiryEditDraft.secondaryPhone.trim() || null,
+        tertiaryCountryCode: enquiryEditDraft.tertiaryCountryCode.trim() || null,
+        tertiaryPhone: enquiryEditDraft.tertiaryPhone.trim() || null,
+        email: enquiryEditDraft.email.trim() || null,
+        secondaryEmail: enquiryEditDraft.secondaryEmail.trim() || null,
+        tertiaryEmail: enquiryEditDraft.tertiaryEmail.trim() || null,
+        medium: enquiryEditDraft.medium.trim() || null,
+        channelPartner: enquiryEditDraft.channelPartner.trim() || null,
+        description: enquiryEditDraft.description.trim() || null,
+        enquiryDate: enquiryEditDraft.enquiryDate ? new Date(enquiryEditDraft.enquiryDate).toISOString() : undefined,
+      });
+      if (!response.data.success) throw new Error(response.data.error || "Failed to update enquiry.");
+      const updatedEnquiry = response.data.data as LeadEnquiry;
+      setEnquiries((current) => current.map((item) => item.id === updatedEnquiry.id ? updatedEnquiry : item));
+      setEditingEnquiry(null);
+      setEnquiryEditDraft(null);
+      toast({ title: "Saved", description: "Related source updated successfully." });
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error?.message || "Failed to update related source.";
+      setEnquiryEditError(message);
+      toast({ title: "Error", description: message, variant: "destructive" as any });
+    } finally {
+      setEnquirySaveLoading(false);
+    }
+  };
+
+  const deleteEnquiry = async () => {
+    if (!enquiryDeleteTarget) return;
+    setEnquiryDeleteLoading(true);
+    try {
+      const response = await enquiryApi.delete(enquiryDeleteTarget.id);
+      if (!response.data.success) throw new Error(response.data.error || "Failed to delete enquiry.");
+      setEnquiries((current) => current.filter((item) => item.id !== enquiryDeleteTarget.id));
+      toast({ title: "Deleted", description: `${enquiryDeleteTarget.enquiryNumber} was deleted.` });
+      setEnquiryDeleteTarget(null);
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error?.response?.data?.error || error?.message || "Failed to delete related source.",
+        variant: "destructive" as any,
+      });
+    } finally {
+      setEnquiryDeleteLoading(false);
+    }
+  };
+
   const loadProjects = React.useCallback((force = false) => {
     if (!force && projectsLoaded.current) return Promise.resolve();
     if (projectsRequest.current) return projectsRequest.current;
@@ -521,6 +883,15 @@ export default function LeadDetailPage() {
 
   const status = lead?.status || "";
 
+  const isLeadCustomField = (fieldName: string) => {
+    const field = fields.find((item) => item.name === fieldName);
+    return Boolean(
+      field &&
+      field.editable &&
+      !field.isStandardField &&
+      !field.isSystemField
+    );
+  };
   const openOwnerDialog = async () => {
     if (!lead) return;
     setIsActionLoading(true);
@@ -574,9 +945,15 @@ export default function LeadDetailPage() {
     for (const field of LEAD_EDITABLE_FIELDS) {
       if (lead[field] !== undefined) editableData[field] = lead[field];
     }
+    for (const field of fields) {
+      if (isLeadCustomField(field.name) && lead.customFields?.[field.name] !== undefined) {
+        editableData[field.name] = lead.customFields[field.name];
+      }
+    }
     editableData.projectId = lead.projectId ?? lead.project?.id ?? null;
     setEditData(editableData);
     setEditFieldErrors({});
+    setActiveTab("overview");
     setIsEditing(true);
     void loadProjects();
   };
@@ -585,7 +962,6 @@ export default function LeadDetailPage() {
     setIsEditing(false);
     setEditData({});
     setEditFieldErrors({});
-    setEditReason("");
   };
 
   const saveEdit = async () => {
@@ -613,15 +989,24 @@ export default function LeadDetailPage() {
           payload[key] = value;
         }
       }
+      const customFields: Record<string, unknown> = {};
+      for (const field of fields) {
+        if (
+          isLeadCustomField(field.name) &&
+          Object.prototype.hasOwnProperty.call(editData, field.name)
+        ) {
+          const value = editData[field.name];
+          customFields[field.name] = value === "" ? null : value;
+        }
+      }
+      if (Object.keys(customFields).length > 0) payload.customFields = customFields;
       if (editData.projectId === null) payload.projectId = null;
       if (payload.status === lead.status) delete payload.status;
-      if (editReason.trim()) payload.reason = editReason.trim();
       await leadApi.update(leadId, payload);
       toast({ title: "Success", description: "Lead updated successfully" });
       setIsEditing(false);
       setEditData({});
       setEditFieldErrors({});
-      setEditReason("");
       await fetchLead();
       if (activeTab === "audit-history") {
         fetchAuditHistory(1);
@@ -641,6 +1026,14 @@ export default function LeadDetailPage() {
   const handlePushToSVC = async () => {
     if (!pushSvcReason.trim()) {
       toast({ title: "Validation", description: "A reason/note is required", variant: "destructive" as any });
+      return;
+    }
+    if (!lead?.projectId && !lead?.project?.id) {
+      toast({
+        title: "Project required",
+        description: "Select a project in Lead Information before pushing this lead to SVC.",
+        variant: "destructive" as any,
+      });
       return;
     }
     setIsActionLoading(true);
@@ -669,6 +1062,65 @@ export default function LeadDetailPage() {
       fetchAuditHistory(1);
     }
     setIsActionLoading(false);
+  };
+
+  const beginPushSvcLeadEdit = () => {
+    if (!lead || !canEditLead) return;
+    setPushSvcLeadDraft({
+      firstName: lead.firstName || "",
+      lastName: lead.lastName || "",
+      phone: lead.phone || lead.mobile || "",
+      company: lead.company || "",
+      email: lead.email || "",
+      projectId: lead.projectId || lead.project?.id || "",
+    });
+    setPushSvcLeadEditing(true);
+    void loadProjects();
+  };
+
+  const savePushSvcLeadEdit = async () => {
+    if (!lead || isActionLoading) return;
+    if (!pushSvcLeadDraft.lastName.trim()) {
+      toast({ title: "Validation", description: "Last name is required.", variant: "destructive" as any });
+      return;
+    }
+    if (!pushSvcLeadDraft.company.trim()) {
+      toast({ title: "Validation", description: "Company is required.", variant: "destructive" as any });
+      return;
+    }
+    if (!pushSvcLeadDraft.phone.trim()) {
+      toast({ title: "Validation", description: "Phone number is required.", variant: "destructive" as any });
+      return;
+    }
+
+    setIsActionLoading(true);
+    try {
+      const response = await leadApi.update(leadId, {
+        firstName: pushSvcLeadDraft.firstName.trim(),
+        lastName: pushSvcLeadDraft.lastName.trim(),
+        phone: pushSvcLeadDraft.phone.trim(),
+        company: pushSvcLeadDraft.company.trim(),
+        email: pushSvcLeadDraft.email.trim(),
+        projectId: pushSvcLeadDraft.projectId || null,
+      });
+      if (!response.data?.success || !response.data.data) {
+        throw new Error(response.data?.error || response.data?.message || "Failed to update lead information.");
+      }
+      setLead((currentLead) => currentLead ? { ...currentLead, ...response.data.data } : response.data.data);
+      setPushSvcLeadEditing(false);
+      toast({ title: "Success", description: "Lead information updated successfully." });
+      if (activeTab === "audit-history") {
+        void fetchAuditHistory(1);
+      }
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err?.response?.data?.error || err?.message || "Failed to update lead information.",
+        variant: "destructive" as any,
+      });
+    } finally {
+      setIsActionLoading(false);
+    }
   };
 
   const handleMoveToRecovery = async () => {
@@ -759,6 +1211,31 @@ export default function LeadDetailPage() {
       }
     } catch (err: any) {
       toast({ title: "Error", description: err?.response?.data?.error || "Failed to create follow-up", variant: "destructive" as any });
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleFollowUpStatus = async (followUp: any) => {
+    setIsActionLoading(true);
+    try {
+      const response = followUp.isCompleted
+        ? await followUpApi.reopen(followUp.id)
+        : await followUpApi.complete(followUp.id);
+      if (!response.data?.success) {
+        throw new Error(response.data?.error || "Failed to update follow-up");
+      }
+      toast({
+        title: followUp.isCompleted ? "Follow-up reopened" : "Follow-up completed",
+        description: followUp.title || followUp.description,
+      });
+      await fetchLead();
+    } catch (error: any) {
+      toast({
+        title: "Unable to update follow-up",
+        description: error?.response?.data?.error || error?.message || "Please try again.",
+        variant: "destructive" as any,
+      });
     } finally {
       setIsActionLoading(false);
     }
@@ -1138,6 +1615,9 @@ export default function LeadDetailPage() {
 
     if (status === "INCOMING" && (prof === "Presales" || prof === "Sales Executive" || adminLike)) {
       actions.push({ label: "Push to SVC", onClick: () => setPushSvcDialogOpen(true), variant: "default" });
+    }
+
+    if (status !== "LOST" && (canEditLead || canManageSiteVisits)) {
       actions.push({ label: "Move to Recovery", onClick: () => setRecoveryDialogOpen(true), variant: "destructive" });
     }
 
@@ -1284,6 +1764,17 @@ export default function LeadDetailPage() {
 
   const lastModifiedBy = lead?.lastModified?.by;
   const lastModifiedAt = lead?.lastModified?.at || lead?.updatedAt;
+  const systemInformation = {
+    record_number: lead?.leadNumber,
+    owner: lead?.owner
+      ? { id: lead.owner.id, name: `${lead.owner.firstName} ${lead.owner.lastName} (${lead.owner.id})`.trim() }
+      : null,
+    created_by: lead?.creator
+      ? { id: lead.creator.id, name: `${lead.creator.firstName} ${lead.creator.lastName}`.trim() }
+      : null,
+    created_at: lead?.createdAt,
+    updated_at: lastModifiedAt,
+  };
 
   if (isLoading || authLoading) {
     return (
@@ -1348,6 +1839,7 @@ export default function LeadDetailPage() {
   const showOpportunities = isSales || isCrm || isSvc || isAdminLike;
   const showAuditHistory = isAdminLike;
   const showSiteVisits = isSvc || isSales || isCrm || isAdminLike || leadProfileName === "Sales Executive" || leadProfileName === "Presales";
+  const currentStatusIndex = LEAD_STATUS_PROGRESSION.findIndex((step) => step.key === status);
 
   const openDetail = (kind: "task" | "followup" | "note" | "activity", data: any) => {
     setDetailItem({ kind, data });
@@ -1355,188 +1847,200 @@ export default function LeadDetailPage() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Lead Status Progression */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-muted-foreground">Lead Status</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-1 overflow-x-auto pb-2">
-            {LEAD_STATUS_PROGRESSION.map((step, idx) => {
-              const isCurrent = step.key === status;
-              return (
-                <React.Fragment key={step.key}>
-                  <div className="flex flex-col items-center min-w-[80px]">
-                    <div
-                      className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-medium ${
-                        isCurrent
-                          ? "bg-blue-600 text-white ring-2 ring-blue-200"
-                          : "bg-muted text-muted-foreground"
-                      }`}
+    <div className="space-y-3 font-sans text-[12px]">
+      <Card className="overflow-hidden rounded-md border-slate-200 bg-white shadow-sm">
+        <CardContent className="p-0">
+          <div className="grid gap-4 px-4 py-3.5 lg:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Lead Record</p>
+              <div className="mt-1 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                <h1 className="text-[20px] font-semibold leading-6 tracking-tight text-slate-900">{leadDisplayName}</h1>
+                <span className="font-mono text-[12px] text-slate-600">{lead.leadNumber}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-3 lg:grid-cols-5">
+                <div className="min-w-0">
+                  <p className="text-[10px] leading-4 text-slate-500">Phone</p>
+                  <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{lead.phone || lead.mobile || "—"}</p>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] leading-4 text-slate-500">Mobile</p>
+                  <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{lead.mobile || "—"}</p>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] leading-4 text-slate-500">Owner</p>
+                  <p className="truncate text-[12px] font-medium leading-4 text-slate-800">
+                    {lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "—"}
+                  </p>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] leading-4 text-slate-500">Project</p>
+                  <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{lead.project?.name || "—"}</p>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] leading-4 text-slate-500">Status</p>
+                  <p className="truncate text-[12px] font-medium leading-4 text-slate-800">{STATUS_LABELS[status] || status}</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-start gap-1.5 lg:justify-end">
+              {isEditing ? (
+                <>
+                  <Button
+                    size="sm"
+                    className="h-8 px-2.5 text-[10px]"
+                    onClick={saveEdit}
+                    disabled={isActionLoading}
+                  >
+                    {isActionLoading ? (
+                      <><Clock className="mr-1 h-3.5 w-3.5 animate-spin" />Saving...</>
+                    ) : (
+                      <><Save className="mr-1 h-3.5 w-3.5" />Save</>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 border-[#5b9fbe] px-2.5 text-[10px] text-[#397b9b] hover:bg-sky-50 hover:text-blue-800"
+                    onClick={cancelEdit}
+                    disabled={isActionLoading}
+                  >
+                    <X className="mr-1 h-3.5 w-3.5" />Cancel
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {hasEffectivePermission("FOLLOW_UP_CREATE") && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 border-[#5b9fbe] px-2.5 text-[10px] font-medium text-[#397b9b] hover:bg-sky-50 hover:text-blue-800"
+                      onClick={() => setFollowUpDialogOpen(true)}
                     >
-                      {isCurrent ? (
-                        <CheckCircle2 className="h-4 w-4" />
-                      ) : (
-                        <span className="text-[11px]">{idx + 1}</span>
-                      )}
-                    </div>
-                    <span
-                      className={`text-[11px] mt-1 text-center ${
-                        isCurrent ? "font-semibold text-blue-600" : "text-muted-foreground"
-                      }`}
-                    >
-                      {step.label}
-                    </span>
-                  </div>
-                  {idx < LEAD_STATUS_PROGRESSION.length - 1 && (
-                    <div
-                      className={`h-0.5 w-4 mt-[-12px] ${
-                        isCurrent ? "bg-blue-400" : "bg-muted"
-                      }`}
-                    />
+                      <Clock className="mr-1 h-3.5 w-3.5" />Follow-up
+                    </Button>
                   )}
-                </React.Fragment>
-              );
-            })}
+                  {(hasPermission("Activity", "create") || hasEffectivePermission("ACTIVITY_CREATE") || isAdmin || isSuperAdmin) && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 border-[#5b9fbe] px-2.5 text-[10px] font-medium text-[#397b9b] hover:bg-sky-50 hover:text-blue-800"
+                      onClick={openCallDialog}
+                    >
+                      <span className="mr-1 flex h-5 w-5 items-center justify-center rounded-full bg-[#579642]">
+                        <Phone className="h-3 w-3 -rotate-[35deg] text-white" aria-hidden="true" />
+                      </span>
+                      Log Call
+                    </Button>
+                  )}
+                  {workflowActions
+                    .filter((action) => action.label === "Push to SVC" || action.label === "Move to Recovery")
+                    .map((action) => (
+                      <Button
+                        key={action.label}
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-[#5b9fbe] px-2.5 text-[10px] font-medium text-[#397b9b] hover:bg-sky-50 hover:text-blue-800"
+                        onClick={action.onClick}
+                        disabled={isActionLoading}
+                      >
+                        {action.label}
+                      </Button>
+                    ))}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-[#5b9fbe] px-2.5 text-[10px] font-medium text-[#397b9b] hover:bg-sky-50 hover:text-blue-800"
+                      >
+                        <MoreHorizontal className="mr-1 h-3.5 w-3.5" />
+                        More
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="text-xs">
+                      {canChangeOwner && (
+                        <DropdownMenuItem onSelect={openOwnerDialog}>Change Owner</DropdownMenuItem>
+                      )}
+                      {canEditLead && (
+                        <DropdownMenuItem onSelect={startEdit}>Edit Lead</DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem onSelect={() => setTaskDialogOpen(true)}>New Task</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setNoteDialogOpen(true)}>Add Note</DropdownMenuItem>
+                      {workflowActions
+                        .filter((action) => action.label !== "Push to SVC" && action.label !== "Move to Recovery")
+                        .map((action) => (
+                          <DropdownMenuItem key={action.label} onSelect={action.onClick}>
+                            {action.label}
+                          </DropdownMenuItem>
+                        ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="border-t border-slate-200 px-4 py-2.5">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h2 className="text-[12px] font-semibold text-slate-700">Lead Status</h2>
+              <Badge className="h-5 rounded-sm border-0 bg-blue-500 px-2 text-[10px] font-medium text-white hover:bg-blue-500">
+                {STATUS_LABELS[status] || status}
+              </Badge>
+            </div>
+            <div className="overflow-x-auto">
+              <div className="flex min-w-[760px] items-center">
+                {LEAD_STATUS_PROGRESSION.map((step, idx) => {
+                  const isCurrent = step.key === status;
+                  const isComplete = status === "BOOKED"
+                    ? idx < LEAD_STATUS_PROGRESSION.length - 2
+                    : currentStatusIndex > idx;
+                  return (
+                    <div
+                      key={step.key}
+                      className={`flex h-[34px] min-w-0 flex-1 items-center justify-center gap-1.5 px-3 text-center text-[10px] font-medium ${
+                        isCurrent
+                          ? "bg-[#1976a8] text-white"
+                          : isComplete
+                            ? "bg-[#d8eaf4] text-[#397b9b]"
+                            : "bg-[#edf1f5] text-slate-500"
+                      }`}
+                      style={{
+                        clipPath: idx === 0
+                          ? "polygon(0 0, calc(100% - 11px) 0, 100% 50%, calc(100% - 11px) 100%, 0 100%)"
+                          : "polygon(0 0, calc(100% - 11px) 0, 100% 50%, calc(100% - 11px) 100%, 0 100%, 11px 50%)",
+                        marginLeft: idx === 0 ? 0 : -7,
+                      }}
+                    >
+                      {isCurrent && <CheckCircle2 className="h-3 w-3 shrink-0" />}
+                      <span className="truncate">{step.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Lead Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold">{leadDisplayName}</h1>
-            <Badge variant="outline" className="font-mono text-sm">
-              {lead.leadNumber}
-            </Badge>
-            <Badge variant={STATUS_VARIANT[STATUS_LABELS[status] ? status : "default"]}>
-              {STATUS_LABELS[status] || status}
-            </Badge>
-          </div>
-          <p className="text-muted-foreground text-sm mt-1">Lead ID: {lead.id}</p>
-          {lead.owner && (
-            <p className="text-sm mt-1">
-              <span className="text-muted-foreground">Owner: </span>
-              <span className="font-medium">{lead.owner.firstName} {lead.owner.lastName}</span>
-            </p>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {canChangeOwner && !isEditing && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openOwnerDialog}
-              disabled={isActionLoading}
-            >
-              <ArrowRight className="h-4 w-4 mr-1" />Change Owner
-            </Button>
-          )}
-          {canEditLead && !isEditing && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={startEdit}
-              disabled={isActionLoading}
-            >
-              <Edit3 className="h-4 w-4 mr-1" />Edit
-            </Button>
-          )}
-          {isEditing && (
-            <>
-              <Button
-                size="sm"
-                onClick={saveEdit}
-                disabled={isActionLoading}
-              >
-                {isActionLoading ? (
-                  <>
-                    <Clock className="h-4 w-4 mr-1 animate-spin" />Saving...
-                  </>
-                ) : (
-                  <>
-                    <Save className="h-4 w-4 mr-1" />Save
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={cancelEdit}
-                disabled={isActionLoading}
-              >
-                <X className="h-4 w-4 mr-1" />Cancel
-              </Button>
-            </>
-          )}
-          {!isEditing && workflowActions.map((action) => (
-            <Button
-              key={action.label}
-              variant={action.variant || "default"}
-              size="sm"
-              onClick={action.onClick}
-              disabled={isActionLoading}
-            >
-              {action.label}
-            </Button>
-          ))}
-          {hasEffectivePermission("FOLLOW_UP_CREATE") && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setFollowUpDialogOpen(true)}
-            >
-              <Clock className="h-4 w-4 mr-1" />Follow-up
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setTaskDialogOpen(true)}
-          >
-            <CheckSquare className="h-4 w-4 mr-1" />Task
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setNoteDialogOpen(true)}
-          >
-            <StickyNote className="h-4 w-4 mr-1" />Note
-          </Button>
-        </div>
-      </div>
-
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="overview" className="gap-2">
-            <User className="h-4 w-4" />Overview
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
+        <TabsList className="flex h-9 w-full flex-nowrap justify-start gap-0.5 overflow-x-auto rounded-md border border-slate-100 bg-[#f0f3f8] p-1">
+          <TabsTrigger value="overview" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <User className="h-4 w-4" />Details
           </TabsTrigger>
-          <TabsTrigger value="enquiries" className="gap-2">
-            <Inbox className="h-4 w-4" />Enquiries
+          <TabsTrigger value="enquiries" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <Inbox className="h-4 w-4" />Enquiry
             {enquiries.length > 0 && (
               <Badge variant="secondary" className="ml-1 h-5 min-w-5 justify-center px-1.5 text-[11px]">
                 {enquiries.length}
               </Badge>
             )}
           </TabsTrigger>
-          <TabsTrigger value="owner-history" className="gap-2">
-            <History className="h-4 w-4" />Owner History
-          </TabsTrigger>
-          <TabsTrigger value="activities" className="gap-2">
-            <History className="h-4 w-4" />Activities
-          </TabsTrigger>
-          <TabsTrigger value="tasks" className="gap-2">
-            <CheckSquare className="h-4 w-4" />Tasks
-          </TabsTrigger>
-          <TabsTrigger value="followups" className="gap-2">
-            <Clock className="h-4 w-4" />Follow-ups
+          <TabsTrigger value="followups" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <Clock className="h-4 w-4" />Follow Up
           </TabsTrigger>
           {showSiteVisits && (
-            <TabsTrigger value="site-visits" className="gap-2">
-              <Map className="h-4 w-4" />Site Visits
+            <TabsTrigger value="site-visits" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+              <Map className="h-4 w-4" />Site Visit
               {lead.siteVisits && lead.siteVisits.length > 0 && (
                 <Badge variant="secondary" className="ml-1 h-5 min-w-5 justify-center px-1.5 text-[11px]">
                   {lead.siteVisits.length}
@@ -1544,13 +2048,36 @@ export default function LeadDetailPage() {
               )}
             </TabsTrigger>
           )}
+          <TabsTrigger value="bookings" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <FileText className="h-4 w-4" />Booking
+            {leadBookings.length > 0 && (
+              <Badge variant="secondary" className="ml-1 h-5 min-w-5 justify-center px-1.5 text-[11px]">
+                {leadBookings.length}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="call-details" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <Phone className="h-4 w-4" />Call Details
+          </TabsTrigger>
+          <TabsTrigger value="feedbacks" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <StickyNote className="h-4 w-4" />Feedbacks
+          </TabsTrigger>
+          <TabsTrigger value="owner-history" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <History className="h-4 w-4" />Owner History
+          </TabsTrigger>
+          <TabsTrigger value="activities" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <History className="h-4 w-4" />Activities
+          </TabsTrigger>
+          <TabsTrigger value="tasks" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
+            <CheckSquare className="h-4 w-4" />Tasks
+          </TabsTrigger>
           {showOpportunities && (
-            <TabsTrigger value="opportunities" className="gap-2">
+            <TabsTrigger value="opportunities" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
               <TrendingUp className="h-4 w-4" />Opportunities
             </TabsTrigger>
           )}
           {showAuditHistory && (
-            <TabsTrigger value="audit-history" className="gap-2">
+            <TabsTrigger value="audit-history" className="h-7 shrink-0 gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-slate-600 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm">
               <FileText className="h-4 w-4" />Audit History
             </TabsTrigger>
           )}
@@ -1558,51 +2085,95 @@ export default function LeadDetailPage() {
 
         {/* Enquiries Tab */}
         <TabsContent value="enquiries">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">Enquiries</CardTitle>
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b bg-muted/40 px-4 py-3">
+              <CardTitle className="flex items-center gap-3 text-base font-semibold">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-violet-500 text-white">
+                  <Monitor className="h-5 w-5" aria-hidden="true" />
+                </span>
+                Enquiry Sources ({enquiries.length})
+              </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="p-0">
               {enquiriesLoading ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">Loading enquiries...</p>
               ) : enquiriesError ? (
-                <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                <div role="alert" className="m-4 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
                   {enquiriesError}
                 </div>
               ) : enquiries.length > 0 ? (
-                <div className="space-y-3">
-                  {enquiries.map((enquiry) => (
-                    <button
-                      key={enquiry.id}
+                <>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40 hover:bg-muted/40">
+                          <TableHead className="min-w-48 font-semibold">Related Source</TableHead>
+                          <TableHead className="min-w-36 font-semibold">Lead Type</TableHead>
+                          <TableHead className="min-w-40 font-semibold">Source</TableHead>
+                          <TableHead className="min-w-52 font-semibold">Created Date</TableHead>
+                          <TableHead className="w-14" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {(showAllEnquiries ? enquiries : enquiries.slice(0, 1)).map((enquiry) => (
+                          <TableRow key={enquiry.id}>
+                            <TableCell>
+                              <button
+                                type="button"
+                                onClick={() => router.push(`/enquiries/${enquiry.id}`)}
+                                className="font-medium text-primary underline decoration-dotted underline-offset-4 hover:decoration-solid"
+                              >
+                                {enquiry.enquiryNumber}
+                              </button>
+                            </TableCell>
+                            <TableCell>
+                              {formatLeadTypeLabel(enquiry.leadType)}
+                            </TableCell>
+                            <TableCell>{enquiry.source || "—"}</TableCell>
+                            <TableCell>{formatDateTime(enquiry.createdAt)}</TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-8 w-8"
+                                    aria-label={`Actions for ${enquiry.enquiryNumber}`}
+                                  >
+                                    <ChevronDown className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => void openEnquiryEditor(enquiry)}>
+                                    <Edit3 className="mr-2 h-4 w-4" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onClick={() => setEnquiryDeleteTarget(enquiry)}
+                                  >
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <div className="flex justify-center border-t py-2">
+                    <Button
                       type="button"
-                      onClick={() => router.push(`/enquiries/${enquiry.id}`)}
-                      className="w-full rounded-md border p-4 text-left transition-colors hover:bg-muted/50"
+                      variant="link"
+                      className="h-8 text-sm"
+                      onClick={() => setShowAllEnquiries((current) => !current)}
                     >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-sm font-medium">{enquiry.enquiryNumber}</span>
-                        <Badge variant="outline">{enquiry.enquiryType.replaceAll("_", " ")}</Badge>
-                      </div>
-                      <dl className="mt-3 grid gap-x-8 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                        <div>
-                          <dt className="text-xs text-muted-foreground">Enquiry Source</dt>
-                          <dd className="font-medium">{enquiry.source || "—"}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs text-muted-foreground">Sub Source</dt>
-                          <dd className="font-medium">{enquiry.subSource || "—"}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs text-muted-foreground">Project</dt>
-                          <dd className="font-medium">{enquiry.project?.name || "—"}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs text-muted-foreground">Enquiry Date</dt>
-                          <dd className="font-medium">{formatDateTime(enquiry.enquiryDate || enquiry.createdAt)}</dd>
-                        </div>
-                      </dl>
-                    </button>
-                  ))}
-                </div>
+                      {showAllEnquiries ? "Show Less" : "View All"}
+                    </Button>
+                  </div>
+                </>
               ) : (
                 <div className="py-8 text-center text-muted-foreground">
                   <Inbox className="mx-auto mb-4 h-12 w-12 opacity-50" />
@@ -1614,90 +2185,87 @@ export default function LeadDetailPage() {
         </TabsContent>
 
         {/* Overview Tab */}
-        <TabsContent value="overview" className="space-y-6">
-          {isEditing && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">Edit Reason (optional)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Textarea
-                  placeholder="Why are you updating this lead? This will be recorded in audit history..."
-                  value={editReason}
-                  onChange={(e) => setEditReason(e.target.value)}
+        <TabsContent value="overview">
+          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+            <div className="min-w-0 space-y-6">
+              {lead && layout && (
+                <LayoutDrivenForm
+                  objectName="Lead"
+                  mode={isEditing ? "edit" : "detail"}
+                  data={isEditing
+                    ? { ...lead.customFields, ...lead, ...editData, ...systemInformation }
+                    : { ...lead.customFields, ...lead, ...systemInformation }}
+                  onChange={(field, value) => {
+                    setEditData((prev) => ({ ...prev, [field]: value }));
+                    setEditFieldErrors((prev) => {
+                      if (!prev[field]) return prev;
+                      const { [field]: _fieldError, ...rest } = prev;
+                      return rest;
+                    });
+                  }}
+                  layout={layout}
+                  fields={fields}
+                  projects={leadProjectOptions}
+                  fieldErrors={editFieldErrors}
+                  onBeginEdit={canEditLead ? () => startEdit() : undefined}
                 />
-              </CardContent>
-            </Card>
-          )}
-          {lead && layout && (
-            <LayoutDrivenForm
-              objectName="Lead"
-              mode={isEditing ? "edit" : "detail"}
-              data={isEditing ? editData : lead}
-              onChange={
-                isEditing
-                  ? (field, value) => {
-                      setEditData((prev) => ({ ...prev, [field]: value }));
-                      if (field === "phone") {
-                        setEditFieldErrors((prev) => {
-                          if (!prev.phone) return prev;
-                          const { phone: _phone, ...rest } = prev;
-                          return rest;
-                        });
-                      }
-                    }
-                  : undefined
-              }
-              layout={layout}
-              fields={fields}
-              projects={leadProjectOptions}
-              fieldErrors={isEditing ? editFieldErrors : undefined}
-            />
-          )}
+              )}
 
-          <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">Timeline</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Created</p>
-                    <p className="text-xs text-muted-foreground">{formatDate(lead!.createdAt)}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Clock className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Last Updated</p>
-                    <p className="text-xs text-muted-foreground">{formatDate(lead!.updatedAt)}</p>
-                  </div>
-                </div>
-                {lead!.creator && (
+              <Card className="rounded-md border-slate-200 shadow-sm">
+                <CardHeader className="border-b border-sky-100 bg-[#f5faff]">
+                  <CardTitle className="text-[12px] font-semibold text-slate-700">Timeline</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div className="flex items-center gap-3">
-                    <User className="h-4 w-4 text-muted-foreground" />
+                    <Calendar className="h-4 w-4 text-muted-foreground" />
                     <div>
-                      <p className="text-sm font-medium">Created By</p>
-                      <p className="text-xs text-muted-foreground">{lead!.creator.firstName} {lead!.creator.lastName}</p>
+                      <p className="text-sm font-medium">Created</p>
+                      <p className="text-xs text-muted-foreground">{formatDate(lead!.createdAt)}</p>
                     </div>
                   </div>
-                )}
-                <div className="flex items-center gap-3">
-                  <Edit3 className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Last Modified</p>
-                    <p className="text-xs text-muted-foreground">{lastModifiedAt ? formatDateTime(lastModifiedAt) : "—"}</p>
-                    <p className="text-xs text-muted-foreground">
-                      by{" "}
-                      {lastModifiedBy
-                        ? `${lastModifiedBy.firstName} ${lastModifiedBy.lastName}`
-                        : "Unknown"}
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <Clock className="h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <p className="text-sm font-medium">Last Updated</p>
+                      <p className="text-xs text-muted-foreground">{formatDate(lead!.updatedAt)}</p>
+                    </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
+                  {lead!.creator && (
+                    <div className="flex items-center gap-3">
+                      <User className="h-4 w-4 text-muted-foreground" />
+                      <div>
+                        <p className="text-sm font-medium">Created By</p>
+                        <p className="text-xs text-muted-foreground">{lead!.creator.firstName} {lead!.creator.lastName}</p>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3">
+                    <Edit3 className="h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <p className="text-sm font-medium">Last Modified</p>
+                      <p className="text-xs text-muted-foreground">{lastModifiedAt ? formatDateTime(lastModifiedAt) : "—"}</p>
+                      <p className="text-xs text-muted-foreground">
+                        by{" "}
+                        {lastModifiedBy
+                          ? `${lastModifiedBy.firstName} ${lastModifiedBy.lastName}`
+                          : "Unknown"}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <aside className="min-w-0 space-y-4">
+              <StickyNotesCard key={`${lead.id}-${stickyNotesRefresh}`} recordId={lead.id} canAdd={canEditLead} />
+              <LeadActivityHistoryCard
+                leadId={lead.id}
+                leadName={leadDisplayName}
+                refreshKey={`${lead.updatedAt}:${lead.activities?.length ?? 0}:${lead.tasks?.length ?? 0}:${lead.followUps?.length ?? 0}:${lead.siteVisits?.length ?? 0}`}
+                canViewAuditHistory={showAuditHistory}
+              />
+            </aside>
+          </div>
         </TabsContent>
 
         {/* Owner History Tab */}
@@ -1822,30 +2390,85 @@ export default function LeadDetailPage() {
 
         {/* Follow-ups Tab */}
         <TabsContent value="followups">
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              {lead.followUps && lead.followUps.length > 0 ? (
-                <div className="space-y-3 text-left">
-                  {lead.followUps.map((fu: any, idx: number) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => openDetail("followup", fu)}
-                      className="w-full flex items-center gap-3 text-left p-3 rounded-md bg-muted/50 hover:bg-muted transition-colors"
-                    >
-                      <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-sm">{fu.title || fu.description || fu.type}</p>
-                        <p className="text-xs text-muted-foreground">{fu.dueDate ? formatDateTime(fu.dueDate) : fu.status}</p>
-                      </div>
-                    </button>
-                  ))}
+          <Card className="overflow-hidden">
+            <CardHeader className="flex flex-row items-center justify-between gap-4 border-b bg-muted/30 px-4 py-3">
+              <CardTitle className="flex items-center gap-3 text-base font-semibold">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-500 text-white">
+                  <CheckSquare className="h-5 w-5" aria-hidden="true" />
+                </span>
+                Follow-ups ({lead.followUps?.length || 0})
+              </CardTitle>
+              <Button variant="outline" onClick={() => setFollowUpDialogOpen(true)}>
+                New
+              </Button>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                      <TableHead className="min-w-48 font-semibold">Follow-up ID</TableHead>
+                      <TableHead className="min-w-48 font-semibold">Subject</TableHead>
+                      <TableHead className="min-w-32 font-semibold">Status</TableHead>
+                      <TableHead className="min-w-48 font-semibold">Scheduled Date</TableHead>
+                      <TableHead className="w-14" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {lead.followUps && lead.followUps.length > 0 ? lead.followUps.map((fu: any) => (
+                      <TableRow key={fu.id}>
+                        <TableCell>
+                          <Link href={`/follow-ups/${fu.id}`} className="font-medium text-primary underline decoration-dotted underline-offset-4 hover:decoration-solid">
+                            {fu.followUpNumber || fu.id}
+                          </Link>
+                        </TableCell>
+                        <TableCell>{fu.title || fu.description || "—"}</TableCell>
+                        <TableCell>
+                          <Badge className={
+                            fu.isCompleted
+                              ? "bg-green-100 text-green-800"
+                              : fu.isMissed
+                                ? "bg-red-100 text-red-800"
+                                : "bg-amber-100 text-amber-800"
+                          }>
+                            {fu.isCompleted ? "Completed" : fu.isMissed ? "Missed" : "Scheduled"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{fu.dueDate ? formatDateTime(fu.dueDate) : "—"}</TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" aria-label="Follow-up actions" disabled={isActionLoading}>
+                                <ChevronDown className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem asChild>
+                                <Link href={`/follow-ups/${fu.id}`}>View Details</Link>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => void handleFollowUpStatus(fu)}>
+                                {fu.isCompleted ? "Reopen" : "Mark Complete"}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    )) : (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">
+                          No follow-ups scheduled.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              {(lead.followUps?.length || 0) > 0 && (
+                <div className="border-t py-3 text-center">
+                  <Link href={`/follow-ups?leadId=${encodeURIComponent(lead.id)}`} className="text-sm font-medium text-primary hover:underline">
+                    View All
+                  </Link>
                 </div>
-              ) : (
-                <>
-                  <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No follow-ups scheduled</p>
-                </>
               )}
             </CardContent>
           </Card>
@@ -1854,42 +2477,264 @@ export default function LeadDetailPage() {
         {/* Site Visits Tab */}
         {showSiteVisits && (
         <TabsContent value="site-visits">
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              {lead.siteVisits && lead.siteVisits.length > 0 ? (
-                <div className="space-y-3 text-left">
-                  {lead.siteVisits.map((sv: any, idx: number) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => router.push(`/site-visits/${sv.id}`)}
-                      className="w-full flex items-center gap-3 text-left p-3 rounded-md bg-muted/50 hover:bg-muted transition-colors"
-                    >
-                      <Map className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {sv.siteVisitNumber && (
-                            <span className="text-sm font-medium font-mono">{sv.siteVisitNumber}</span>
-                          )}
-                          <Badge variant="outline">{sv.status || "SCHEDULED"}</Badge>
-                          {sv.project?.name && <span className="text-sm text-muted-foreground">- {sv.project.name}</span>}
-                        </div>
-                        <p className="text-xs text-muted-foreground">{sv.scheduledAt ? formatDateTime(sv.scheduledAt) : sv.createdAt ? formatDateTime(sv.createdAt) : ""}</p>
-                        {sv.assignee && <p className="text-xs text-muted-foreground">Assigned: {sv.assignee.firstName} {sv.assignee.lastName}</p>}
-                      </div>
-                    </button>
-                  ))}
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b bg-muted/40 px-4 py-3">
+              <CardTitle className="flex items-center gap-3 text-base font-semibold">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-500 text-white">
+                  <Map className="h-5 w-5" aria-hidden="true" />
+                </span>
+                Site Visit ({lead.siteVisits?.length || 0})
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                      <TableHead className="min-w-40 font-semibold">Visit Number</TableHead>
+                      <TableHead className="min-w-44 font-semibold">Scheduled Date</TableHead>
+                      <TableHead className="min-w-32 font-semibold">Status</TableHead>
+                      <TableHead className="min-w-40 font-semibold">Project</TableHead>
+                      <TableHead className="w-14" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {lead.siteVisits && lead.siteVisits.length > 0 ? (
+                      (showAllSiteVisits ? lead.siteVisits : lead.siteVisits.slice(0, 1)).map((sv: any) => (
+                        <TableRow key={sv.id}>
+                          <TableCell>
+                            <Link href={`/site-visits/${sv.id}`} className="font-medium text-primary underline decoration-dotted underline-offset-4 hover:decoration-solid">
+                              {sv.siteVisitNumber || "—"}
+                            </Link>
+                          </TableCell>
+                          <TableCell>{sv.scheduledAt ? formatDateTime(sv.scheduledAt) : sv.createdAt ? formatDateTime(sv.createdAt) : "—"}</TableCell>
+                          <TableCell><Badge variant="outline">{String(sv.status || "Scheduled").replaceAll("_", " ")}</Badge></TableCell>
+                          <TableCell>{sv.project?.name || "—"}</TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="outline" size="icon" className="h-8 w-8" aria-label={`Actions for ${sv.siteVisitNumber || "site visit"}`}>
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem asChild>
+                                  <Link href={`/site-visits/${sv.id}`}>View Details</Link>
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">No site visits scheduled.</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              {(lead.siteVisits?.length || 0) > 1 && (
+                <div className="border-t py-2 text-center">
+                  <Button type="button" variant="link" className="h-8 text-sm" onClick={() => setShowAllSiteVisits((current) => !current)}>
+                    {showAllSiteVisits ? "Show Less" : "View All"}
+                  </Button>
                 </div>
-              ) : (
-                <>
-                  <Map className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No site visits scheduled</p>
-                </>
               )}
             </CardContent>
           </Card>
         </TabsContent>
         )}
+
+        {/* Bookings Tab */}
+        <TabsContent value="bookings">
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b bg-muted/40 px-4 py-3">
+              <CardTitle className="flex items-center gap-3 text-base font-semibold">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-500 text-white">
+                  <FileText className="h-5 w-5" aria-hidden="true" />
+                </span>
+                Booking ({leadBookings.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {leadBookingsLoading ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">Loading bookings...</p>
+              ) : leadBookingsError ? (
+                <div role="alert" className="m-4 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{leadBookingsError}</div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40 hover:bg-muted/40">
+                          <TableHead className="min-w-36 font-semibold">Booking Number</TableHead>
+                          <TableHead className="min-w-40 font-semibold">Booking Date</TableHead>
+                          <TableHead className="min-w-40 font-semibold">Project</TableHead>
+                          <TableHead className="min-w-32 font-semibold">Unit</TableHead>
+                          <TableHead className="min-w-32 font-semibold">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {leadBookings.length > 0 ? (
+                          (showAllLeadBookings ? leadBookings : leadBookings.slice(0, 1)).map((booking: any) => (
+                            <TableRow key={booking.id}>
+                              <TableCell>
+                                <Link href={`/bookings/${booking.id}`} className="font-medium text-primary underline decoration-dotted underline-offset-4 hover:decoration-solid">
+                                  {booking.number || "—"}
+                                </Link>
+                              </TableCell>
+                              <TableCell>{booking.bookingDate ? formatDateTime(booking.bookingDate) : "—"}</TableCell>
+                              <TableCell>{booking.project?.name || "—"}</TableCell>
+                              <TableCell>{booking.unit?.number || "—"}</TableCell>
+                              <TableCell><Badge variant="outline">{booking.status || "—"}</Badge></TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow><TableCell colSpan={5} className="h-20 text-center text-muted-foreground">No bookings recorded.</TableCell></TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {leadBookings.length > 1 && (
+                    <div className="border-t py-2 text-center">
+                      <Button type="button" variant="link" className="h-8 text-sm" onClick={() => setShowAllLeadBookings((current) => !current)}>
+                        {showAllLeadBookings ? "Show Less" : "View All"}
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Call Details Tab */}
+        <TabsContent value="call-details">
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b bg-muted/40 px-4 py-3">
+              <CardTitle className="flex items-center gap-3 text-base font-semibold">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-500 text-white">
+                  <Phone className="h-5 w-5" aria-hidden="true" />
+                </span>
+                Call Details ({callDetails.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {callDetailsLoading ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">Loading call details...</p>
+              ) : callDetailsError ? (
+                <div role="alert" className="m-4 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">{callDetailsError}</div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40 hover:bg-muted/40">
+                          <TableHead className="min-w-40 font-semibold">Call Details Name</TableHead>
+                          <TableHead className="min-w-32 font-semibold">Call Type</TableHead>
+                          <TableHead className="min-w-36 font-semibold">Call From</TableHead>
+                          <TableHead className="min-w-36 font-semibold">Call To</TableHead>
+                          <TableHead className="min-w-40 font-semibold">Start Time</TableHead>
+                          <TableHead className="min-w-40 font-semibold">End Time</TableHead>
+                          <TableHead className="min-w-28 font-semibold">Duration</TableHead>
+                          <TableHead className="min-w-28 font-semibold">Status</TableHead>
+                          <TableHead className="min-w-48 font-semibold">Notes</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {callDetails.length > 0 ? (
+                          (showAllCallDetails ? callDetails : callDetails.slice(0, 1)).map((call: any) => (
+                            <TableRow key={call.id} className="cursor-pointer" onClick={() => openDetail("activity", call)}>
+                              <TableCell className="font-medium">{call.name || call.subject || "Call"}</TableCell>
+                              <TableCell>{call.callType ? call.callType.toLowerCase() === "inbound" ? "Inbound" : "Outbound" : "—"}</TableCell>
+                              <TableCell>{call.callFrom || "—"}</TableCell>
+                              <TableCell>{call.callTo || "—"}</TableCell>
+                              <TableCell>{call.startAt ? formatDateTime(call.startAt) : "—"}</TableCell>
+                              <TableCell>{call.endAt ? formatDateTime(call.endAt) : "—"}</TableCell>
+                              <TableCell>{typeof call.duration === "number" ? `${Math.floor(call.duration / 60)}m ${call.duration % 60}s` : "—"}</TableCell>
+                              <TableCell><Badge variant="outline">{call.status || "—"}</Badge></TableCell>
+                              <TableCell className="max-w-72 truncate">{call.description || call.notes || "—"}</TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow><TableCell colSpan={9} className="h-20 text-center text-muted-foreground">No call details recorded.</TableCell></TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {callDetails.length > 1 && (
+                    <div className="border-t py-2 text-center">
+                      <Button type="button" variant="link" className="h-8 text-sm" onClick={() => setShowAllCallDetails((current) => !current)}>
+                        {showAllCallDetails ? "Show Less" : "View All"}
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Feedbacks Tab */}
+        <TabsContent value="feedbacks">
+          {(() => {
+            const feedbacks = showSiteVisits
+              ? (lead.siteVisits || []).filter((visit: any) => visit.customerFeedback || visit.feedback)
+              : [];
+            return (
+              <Card className="overflow-hidden">
+                <CardHeader className="border-b bg-muted/40 px-4 py-3">
+                  <CardTitle className="flex items-center gap-3 text-base font-semibold">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-500 text-white">
+                      <StickyNote className="h-5 w-5" aria-hidden="true" />
+                    </span>
+                    Feedbacks ({feedbacks.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40 hover:bg-muted/40">
+                          <TableHead className="min-w-36 font-semibold">Visit Number</TableHead>
+                          <TableHead className="min-w-56 font-semibold">Feedback</TableHead>
+                          <TableHead className="min-w-24 font-semibold">Rating</TableHead>
+                          <TableHead className="min-w-40 font-semibold">Visit Date</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {feedbacks.length > 0 ? (
+                          (showAllFeedbacks ? feedbacks : feedbacks.slice(0, 1)).map((visit: any) => (
+                            <TableRow key={visit.id}>
+                              <TableCell>
+                                <Link href={`/site-visits/${visit.id}`} className="font-medium text-primary underline decoration-dotted underline-offset-4 hover:decoration-solid">
+                                  {visit.siteVisitNumber || "—"}
+                                </Link>
+                              </TableCell>
+                              <TableCell className="max-w-96 whitespace-normal">{visit.customerFeedback || visit.feedback}</TableCell>
+                              <TableCell>{visit.rating ?? "—"}</TableCell>
+                              <TableCell>{visit.completedAt || visit.scheduledAt ? formatDateTime(visit.completedAt || visit.scheduledAt) : "—"}</TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow><TableCell colSpan={4} className="h-20 text-center text-muted-foreground">No feedback recorded.</TableCell></TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {feedbacks.length > 1 && (
+                    <div className="border-t py-2 text-center">
+                      <Button type="button" variant="link" className="h-8 text-sm" onClick={() => setShowAllFeedbacks((current) => !current)}>
+                        {showAllFeedbacks ? "Show Less" : "View All"}
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
+        </TabsContent>
 
         {/* Opportunities Tab */}
         {showOpportunities && (
@@ -2078,25 +2923,156 @@ export default function LeadDetailPage() {
       </Dialog>
 
       {/* Push to SVC Dialog */}
-      <Dialog open={pushSvcDialogOpen} onOpenChange={setPushSvcDialogOpen}>
+      <Dialog
+        open={pushSvcDialogOpen}
+        onOpenChange={(open) => {
+          setPushSvcDialogOpen(open);
+          if (!open) setPushSvcLeadEditing(false);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Push Lead to SVC?</DialogTitle>
-            <DialogDescription>This lead will be assigned to a Site Visit Coordinator via Round Robin.</DialogDescription>
+            <DialogTitle>Push Lead to SVC</DialogTitle>
+            <DialogDescription>
+              This lead will move to Prospect and be assigned to an active SVC member in a round-robin queue matching the project and lead source.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="rounded-md border bg-muted/30 p-3 text-sm">
-              <p className="mb-1 font-medium">Lead Information</p>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
-                <p>Lead Number: <span className="font-medium text-foreground">{lead.leadNumber}</span></p>
-                <p>Name: <span className="font-medium text-foreground">{`${lead.firstName || ""} ${lead.lastName || ""}`.trim()}</span></p>
-                <p>Phone: <span className="font-medium text-foreground">{lead.phone || lead.mobile || "—"}</span></p>
-                <p>Company: <span className="font-medium text-foreground">{lead.company || "—"}</span></p>
-                <p>Email: <span className="font-medium text-foreground">{lead.email || "—"}</span></p>
-                <p>Owner: <span className="font-medium text-foreground">{lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}</span></p>
-                <p>Project: <span className="font-medium text-foreground">{lead.project?.name || "—"}</span></p>
-                <p>Status: <span className="font-medium text-foreground">{lead.status}</span></p>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="font-medium">Lead Information</p>
+                {canEditLead && (
+                  <div className="flex gap-2">
+                    {pushSvcLeadEditing ? (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setPushSvcLeadEditing(false)}
+                          disabled={isActionLoading}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={savePushSvcLeadEdit}
+                          disabled={isActionLoading}
+                        >
+                          {isActionLoading ? "Saving..." : "Save"}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={beginPushSvcLeadEdit}
+                        disabled={isActionLoading}
+                      >
+                        Edit
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
+              {pushSvcLeadEditing ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="push-svc-first-name">First Name</Label>
+                    <Input
+                      id="push-svc-first-name"
+                      value={pushSvcLeadDraft.firstName}
+                      onChange={(event) => setPushSvcLeadDraft((draft) => ({ ...draft, firstName: event.target.value }))}
+                      disabled={isActionLoading}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="push-svc-last-name">Last Name *</Label>
+                    <Input
+                      id="push-svc-last-name"
+                      value={pushSvcLeadDraft.lastName}
+                      onChange={(event) => setPushSvcLeadDraft((draft) => ({ ...draft, lastName: event.target.value }))}
+                      disabled={isActionLoading}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="push-svc-phone">Phone *</Label>
+                    <Input
+                      id="push-svc-phone"
+                      value={pushSvcLeadDraft.phone}
+                      onChange={(event) => setPushSvcLeadDraft((draft) => ({ ...draft, phone: event.target.value }))}
+                      disabled={isActionLoading}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="push-svc-company">Company *</Label>
+                    <Input
+                      id="push-svc-company"
+                      value={pushSvcLeadDraft.company}
+                      onChange={(event) => setPushSvcLeadDraft((draft) => ({ ...draft, company: event.target.value }))}
+                      disabled={isActionLoading}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="push-svc-email">Email</Label>
+                    <Input
+                      id="push-svc-email"
+                      type="email"
+                      value={pushSvcLeadDraft.email}
+                      onChange={(event) => setPushSvcLeadDraft((draft) => ({ ...draft, email: event.target.value }))}
+                      disabled={isActionLoading}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="push-svc-project">Project *</Label>
+                    <Select
+                      value={pushSvcLeadDraft.projectId}
+                      onValueChange={(projectId) => setPushSvcLeadDraft((draft) => ({ ...draft, projectId }))}
+                      disabled={projectsLoading || Boolean(projectsError) || isActionLoading}
+                    >
+                      <SelectTrigger id="push-svc-project">
+                        <SelectValue placeholder="Select a project" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {lead.project?.id && !projects.some((project) => project.id === lead.project?.id) && (
+                          <SelectItem value={lead.project.id}>{lead.project.name} (Current)</SelectItem>
+                        )}
+                        {projects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {projectsError && (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-destructive">{projectsError}</p>
+                        <Button type="button" size="sm" variant="outline" onClick={() => void loadProjects(true)}>
+                          Retry
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="sm:col-span-2 border-t pt-2 text-muted-foreground">
+                    <p>Lead Number: <span className="font-medium text-foreground">{lead.leadNumber}</span></p>
+                    <p>Current Owner: <span className="font-medium text-foreground">{lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}</span></p>
+                    <p>Current Status: <span className="font-medium text-foreground">{lead.status}</span></p>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+                  <p>Lead Number: <span className="font-medium text-foreground">{lead.leadNumber}</span></p>
+                  <p>Name: <span className="font-medium text-foreground">{`${lead.firstName || ""} ${lead.lastName || ""}`.trim()}</span></p>
+                  <p>Phone: <span className="font-medium text-foreground">{lead.phone || lead.mobile || "—"}</span></p>
+                  <p>Secondary Phone: <span className="font-medium text-foreground">{lead.secondaryPhone || lead.mobile || "—"}</span></p>
+                  <p>Tertiary Phone: <span className="font-medium text-foreground">{lead.tertiaryPhone || "—"}</span></p>
+                  <p>Company: <span className="font-medium text-foreground">{lead.company || "—"}</span></p>
+                  <p>Email: <span className="font-medium text-foreground">{lead.email || "—"}</span></p>
+                  <p>Owner: <span className="font-medium text-foreground">{lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}</span></p>
+                  <p>Project: <span className="font-medium text-foreground">{lead.project?.name || "—"}</span></p>
+                  <p>Status: <span className="font-medium text-foreground">{lead.status}</span></p>
+                </div>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="push-svc-reason">Reason / Note *</Label>
@@ -2105,13 +3081,14 @@ export default function LeadDetailPage() {
                 placeholder="Enter reason for pushing to SVC..."
                 value={pushSvcReason}
                 onChange={(e) => setPushSvcReason(e.target.value)}
+                maxLength={2000}
               />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPushSvcDialogOpen(false)} disabled={isActionLoading}>Cancel</Button>
-            <Button onClick={handlePushToSVC} disabled={isActionLoading || !pushSvcReason.trim()}>
-              {isActionLoading ? "Pushing..." : "Push to SVC"}
+            <Button onClick={handlePushToSVC} disabled={isActionLoading || pushSvcLeadEditing || !pushSvcReason.trim()}>
+              {pushSvcLeadEditing ? "Save Lead Info first" : isActionLoading ? "Pushing..." : "Push to SVC"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2218,6 +3195,91 @@ export default function LeadDetailPage() {
               disabled={isActionLoading || projectsLoading || Boolean(projectsError) || !projects.length || !svProjectId || !svNote.trim() || !svDate || !svTime}
             >
               {isActionLoading ? "Scheduling..." : "Schedule Visit"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={callDialogOpen} onOpenChange={(open) => !callSaving && setCallDialogOpen(open)}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Log Call</DialogTitle>
+            <DialogDescription>Save a call record for this lead. Notes will also be added to Sticky Notes.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="call-type">Call Type *</Label>
+              <Select value={callType} onValueChange={(value: "INBOUND" | "OUTBOUND") => setCallType(value)}>
+                <SelectTrigger id="call-type"><SelectValue placeholder="Select call type" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="OUTBOUND">Outbound</SelectItem>
+                  <SelectItem value="INBOUND">Inbound</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="call-from">Call From</Label>
+                <Input id="call-from" maxLength={255} value={callFrom} onChange={(event) => setCallFrom(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-to">Call To</Label>
+                <Input id="call-to" maxLength={50} value={callTo} onChange={(event) => setCallTo(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-executive-contact">Executive Contact No.</Label>
+                <Input id="call-executive-contact" maxLength={50} value={executiveContactNo} onChange={(event) => setExecutiveContactNo(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-landing-number">Landing Number</Label>
+                <Input id="call-landing-number" maxLength={255} value={landingNumber} onChange={(event) => setLandingNumber(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-opportunity">Opportunity</Label>
+                <select id="call-opportunity" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={callOpportunityId} onChange={(event) => setCallOpportunityId(event.target.value)}>
+                  <option value="">No opportunity</option>
+                  {(lead?.opportunities || []).map((opportunity: any) => (
+                    <option key={opportunity.id} value={opportunity.id}>{opportunity.name || opportunity.opportunityNumber || "Opportunity"}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-parent-url">Parent URL</Label>
+                <Input id="call-parent-url" value={`/leads/${leadId}`} readOnly />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="call-recording-file">Recording File</Label>
+                <Input id="call-recording-file" type="url" maxLength={255} placeholder="https://..." value={recordingFile} onChange={(event) => setRecordingFile(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-status">Status</Label>
+                <select id="call-status" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={callStatus} onChange={(event) => setCallStatus(event.target.value)}>
+                  <option value="COMPLETED">Completed</option>
+                  <option value="NO_ANSWER">No Answer</option>
+                  <option value="BUSY">Busy</option>
+                  <option value="VOICEMAIL">Voicemail</option>
+                  <option value="CANCELLED">Cancelled</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-start-time">Start Time *</Label>
+                <Input id="call-start-time" type="datetime-local" value={callStartAt} onChange={(event) => setCallStartAt(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="call-end-time">End Time *</Label>
+                <Input id="call-end-time" type="datetime-local" value={callEndAt} onChange={(event) => setCallEndAt(event.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="call-notes">Notes</Label>
+              <Textarea id="call-notes" maxLength={5000} rows={4} placeholder="Enter call notes..." value={callNotes} onChange={(event) => setCallNotes(event.target.value)} />
+              <p className="text-xs text-muted-foreground">When provided, these notes are also added to this lead&apos;s Sticky Notes.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCallDialogOpen(false)} disabled={callSaving}>Cancel</Button>
+            <Button onClick={() => void handleLogCall()} disabled={callSaving}>
+              {callSaving ? "Saving..." : "Save Call"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2358,12 +3420,14 @@ export default function LeadDetailPage() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
+              {detailItem?.data.recordType === "CALL_DETAIL" && "Call Details"}
               {detailItem?.kind === "task" && "Task Details"}
               {detailItem?.kind === "followup" && "Follow-up Details"}
               {detailItem?.kind === "note" && "Note Details"}
               {detailItem?.kind === "activity" && "Activity Details"}
             </DialogTitle>
             <DialogDescription>
+              {detailItem?.data.recordType === "CALL_DETAIL" && "Full call details record"}
               {detailItem?.kind === "task" && "Full task record"}
               {detailItem?.kind === "followup" && "Full follow-up record"}
               {detailItem?.kind === "note" && "Note content and metadata"}
@@ -2371,6 +3435,38 @@ export default function LeadDetailPage() {
             </DialogDescription>
           </DialogHeader>
           {detailItem && (
+            detailItem.data.recordType === "CALL_DETAIL" ? (
+              <dl className="grid max-h-[60vh] gap-3 overflow-y-auto py-2 sm:grid-cols-2">
+                {[
+                  ["Call Details Name", detailItem.data.name],
+                  ["Call From", detailItem.data.callFrom],
+                  ["Call ID", detailItem.data.callId],
+                  ["Call To", detailItem.data.callTo],
+                  ["Call Type", detailItem.data.callType],
+                  ["Case", detailItem.data.case?.leadNumber || detailItem.data.case?.lastName],
+                  ["Created By", [detailItem.data.createdBy?.firstName, detailItem.data.createdBy?.lastName].filter(Boolean).join(" ")],
+                  ["Duration", typeof detailItem.data.duration === "number" ? `${Math.floor(detailItem.data.duration / 60)}m ${detailItem.data.duration % 60}s` : ""],
+                  ["End Time", detailItem.data.endAt ? formatDateTime(detailItem.data.endAt) : ""],
+                  ["Executive Contact No.", detailItem.data.executiveContactNo],
+                  ["Landing Number", detailItem.data.landingNumber],
+                  ["Last Modified By", [detailItem.data.lastModifiedBy?.firstName, detailItem.data.lastModifiedBy?.lastName].filter(Boolean).join(" ")],
+                  ["Lead", detailItem.data.lead?.leadNumber || detailItem.data.lead?.lastName],
+                  ["Opportunity", detailItem.data.opportunity?.name || detailItem.data.opportunity?.opportunityNumber],
+                  ["Owner", [detailItem.data.owner?.firstName, detailItem.data.owner?.lastName].filter(Boolean).join(" ")],
+                  ["Parent ID", detailItem.data.parentId],
+                  ["Parent URL", detailItem.data.parentUrl],
+                  ["Recording File", detailItem.data.recordingFile],
+                  ["Start Time", detailItem.data.startAt ? formatDateTime(detailItem.data.startAt) : ""],
+                  ["Status", detailItem.data.status],
+                  ["Notes", detailItem.data.notes],
+                ].map(([label, value]) => (
+                  <div key={label} className="space-y-1">
+                    <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+                    <dd className="break-words text-sm">{value || "—"}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
             <div className="space-y-4 py-2">
               <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">
@@ -2425,6 +3521,7 @@ export default function LeadDetailPage() {
                 </div>
               )}
             </div>
+            )
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailDialogOpen(false)}>Close</Button>
@@ -2883,6 +3980,200 @@ export default function LeadDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={Boolean(editingEnquiry)}
+        onOpenChange={(open) => {
+          if (!open && !enquirySaveLoading) {
+            setEditingEnquiry(null);
+            setEnquiryEditDraft(null);
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-4">
+            <DialogTitle className="text-center">Edit {editingEnquiry?.enquiryNumber || "Related Source"}</DialogTitle>
+            <DialogDescription className="sr-only">Update the enquiry source and contact details linked to this Lead.</DialogDescription>
+          </DialogHeader>
+          {enquiryEditDraft && (
+            <>
+              <div className="grid gap-x-8 gap-y-4 overflow-y-auto px-6 py-5 sm:grid-cols-2">
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Related Source</Label>
+                  <Input value={editingEnquiry?.enquiryNumber || ""} disabled />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Lead Type</Label>
+                  <Select value={enquiryEditDraft.leadType} onValueChange={(value) => updateEnquiryDraft("leadType", value)}>
+                    <SelectTrigger><SelectValue placeholder="Select Lead Type" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ORIGINAL">Fresh</SelectItem>
+                      <SelectItem value="RE_OPENED">Re-Opened</SelectItem>
+                      <SelectItem value="RE_ENGAGED">Re-Engaged</SelectItem>
+                      <SelectItem value="ADDITIONAL">Additional</SelectItem>
+                      <SelectItem value="OUTSIDE_REENGAGEMENT_WINDOW">Outside Re-Engagement Window</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Lead ID</Label>
+                  <Input value={lead?.leadNumber || lead?.id || ""} disabled />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Source <span className="text-destructive">*</span></Label>
+                  <Input value={enquiryEditDraft.source} onChange={(event) => updateEnquiryDraft("source", event.target.value)} maxLength={120} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Campaign</Label>
+                  <Input
+                    value={enquiryEditDraft.campaign}
+                    onChange={(event) => {
+                      updateEnquiryDraft("campaign", event.target.value);
+                      updateEnquiryDraft("campaignId", "");
+                    }}
+                    maxLength={160}
+                  />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Allocated Project</Label>
+                  <Select
+                    value={enquiryEditDraft.projectId || "__no_project__"}
+                    onValueChange={(value) => updateEnquiryDraft("projectId", value === "__no_project__" ? "" : value)}
+                  >
+                    <SelectTrigger disabled={enquiryEditProjectsLoading}>
+                      <SelectValue placeholder={enquiryEditProjectsLoading ? "Loading projects..." : "Select project"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__no_project__">No Project</SelectItem>
+                      {enquiryEditProjects.map((project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Sub Source</Label>
+                  <Input value={enquiryEditDraft.subSource} onChange={(event) => updateEnquiryDraft("subSource", event.target.value)} maxLength={120} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Sub Campaign</Label>
+                  <Input
+                    value={enquiryEditDraft.subCampaign}
+                    onChange={(event) => {
+                      updateEnquiryDraft("subCampaign", event.target.value);
+                      updateEnquiryDraft("subCampaignId", "");
+                    }}
+                    maxLength={160}
+                  />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Country Code</Label>
+                  <Input value={enquiryEditDraft.countryCode} onChange={(event) => updateEnquiryDraft("countryCode", event.target.value)} maxLength={8} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Phone</Label>
+                  <Input type="tel" value={enquiryEditDraft.phone} onChange={(event) => updateEnquiryDraft("phone", event.target.value)} maxLength={64} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Secondary Country Code</Label>
+                  <Input value={enquiryEditDraft.secondaryCountryCode} onChange={(event) => updateEnquiryDraft("secondaryCountryCode", event.target.value)} maxLength={8} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Secondary Phone</Label>
+                  <Input type="tel" value={enquiryEditDraft.secondaryPhone} onChange={(event) => updateEnquiryDraft("secondaryPhone", event.target.value)} maxLength={64} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Tertiary Country Code</Label>
+                  <Input value={enquiryEditDraft.tertiaryCountryCode} onChange={(event) => updateEnquiryDraft("tertiaryCountryCode", event.target.value)} maxLength={8} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Tertiary Phone</Label>
+                  <Input type="tel" value={enquiryEditDraft.tertiaryPhone} onChange={(event) => updateEnquiryDraft("tertiaryPhone", event.target.value)} maxLength={64} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Email</Label>
+                  <Input type="email" value={enquiryEditDraft.email} onChange={(event) => updateEnquiryDraft("email", event.target.value)} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Secondary Email</Label>
+                  <Input type="email" value={enquiryEditDraft.secondaryEmail} onChange={(event) => updateEnquiryDraft("secondaryEmail", event.target.value)} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Tertiary Email</Label>
+                  <Input type="email" value={enquiryEditDraft.tertiaryEmail} onChange={(event) => updateEnquiryDraft("tertiaryEmail", event.target.value)} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Medium</Label>
+                  <Input value={enquiryEditDraft.medium} onChange={(event) => updateEnquiryDraft("medium", event.target.value)} maxLength={120} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Channel Partner</Label>
+                  <Input value={enquiryEditDraft.channelPartner} onChange={(event) => updateEnquiryDraft("channelPartner", event.target.value)} maxLength={160} />
+                </div>
+                <div className="grid grid-cols-[minmax(110px,0.7fr)_minmax(0,1.3fr)] items-center gap-3">
+                  <Label>Enquiry Date</Label>
+                  <Input type="datetime-local" value={enquiryEditDraft.enquiryDate} onChange={(event) => updateEnquiryDraft("enquiryDate", event.target.value)} />
+                </div>
+                <div className="sm:col-span-2">
+                  <Label htmlFor="related-source-description">Enquiry Details</Label>
+                  <Textarea
+                    id="related-source-description"
+                    className="mt-2"
+                    value={enquiryEditDraft.description}
+                    onChange={(event) => updateEnquiryDraft("description", event.target.value)}
+                    maxLength={5000}
+                    rows={3}
+                  />
+                </div>
+                {enquiryEditProjectsLoading && <p className="text-sm text-muted-foreground sm:col-span-2">Loading projects...</p>}
+                {enquiryEditError && (
+                  <p role="alert" className="text-sm text-destructive sm:col-span-2">{enquiryEditError}</p>
+                )}
+              </div>
+              <DialogFooter className="border-t bg-muted/30 px-6 py-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setEditingEnquiry(null);
+                    setEnquiryEditDraft(null);
+                  }}
+                  disabled={enquirySaveLoading}
+                >
+                  Cancel
+                </Button>
+                <Button type="button" onClick={() => void saveEnquiryEdits()} disabled={enquirySaveLoading || !enquiryEditDraft.source.trim()}>
+                  {enquirySaveLoading ? "Saving..." : "Save"}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={Boolean(enquiryDeleteTarget)} onOpenChange={(open) => {
+        if (!open && !enquiryDeleteLoading) setEnquiryDeleteTarget(null);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete related source?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete {enquiryDeleteTarget?.enquiryNumber || "this enquiry"} from this Lead. The main Lead will not be deleted, and this action will be recorded in audit history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={enquiryDeleteLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteEnquiry();
+              }}
+              disabled={enquiryDeleteLoading}
+            >
+              {enquiryDeleteLoading ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

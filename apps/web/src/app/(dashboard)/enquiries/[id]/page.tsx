@@ -27,6 +27,7 @@ type EnquiryDetail = {
   tertiaryPhone?: string | null;
   email?: string | null;
   secondaryEmail?: string | null;
+  tertiaryEmail?: string | null;
   description?: string | null;
   channelPartner?: string | null;
   enquiryDate: string;
@@ -43,6 +44,20 @@ function personName(person?: { firstName: string; lastName: string } | null) {
 
 function displayDate(value?: string | null) {
   return value ? new Date(value).toLocaleString() : "—";
+}
+
+function formatLeadTypeLabel(leadType?: string | null) {
+  switch (leadType) {
+    case "ORIGINAL":
+    case "ADDITIONAL":
+      return "Fresh";
+    case "RE_ENGAGED":
+      return "Re-Engaged";
+    case "RE_OPENED":
+      return "Re-Opened";
+    default:
+      return leadType ? leadType.replaceAll("_", " ") : "—";
+  }
 }
 
 function DetailField({ label, value }: { label: string; value?: React.ReactNode }) {
@@ -89,7 +104,7 @@ export default function EnquiryDetailPage() {
     ["Related Enquiry", enquiry.enquiryNumber],
     ["Lead ID", enquiry.lead.leadNumber || enquiry.lead.id],
     ["Lead", <Link key="lead" className="text-primary hover:underline" href={leadPath}>{leadName || enquiry.lead.company}</Link>],
-    ["Lead Type", enquiry.leadType === "ORIGINAL" ? "Original" : enquiry.leadType === "RE_ENGAGED" ? "Re-Engaged" : "Additional"],
+    ["Lead Type", formatLeadTypeLabel(enquiry.leadType)],
     ["Enquiry Type", enquiry.enquiryType.replaceAll("_", " ")],
     ["Enquiry Source", enquiry.source],
     ["Sub Source", enquiry.subSource],
@@ -104,6 +119,7 @@ export default function EnquiryDetailPage() {
     ["Tertiary Phone", enquiry.tertiaryPhone],
     ["Email", enquiry.email],
     ["Secondary Email", enquiry.secondaryEmail],
+    ["Tertiary Email", enquiry.tertiaryEmail],
     ["Description", enquiry.description],
     ["Channel Partner", enquiry.channelPartner],
     ["Enquiry Date", displayDate(enquiry.enquiryDate)],

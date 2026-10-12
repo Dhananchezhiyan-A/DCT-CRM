@@ -3,7 +3,7 @@ import { prisma } from '@dct-crm/db';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { EffectivePermissionService } from '../services/effectivePermissions';
-import { canAccessBooking, canAccessLead } from '../services/recordAccess';
+import { canAccessBooking, canAccessLead, canAccessOpportunity } from '../services/recordAccess';
 
 const router = Router();
 
@@ -30,11 +30,20 @@ type NoteRecord =
       ownerId: string | null;
       creatorId: string | null;
       leadId: string | null;
+    }
+  | {
+      type: 'Opportunity';
+      id: string;
+      tenantId: string;
+      notes: string | null;
+      ownerId: string | null;
+      creatorId: string;
+      leadId: string | null;
     };
 
 async function findNoteRecord(recordId: string, user: NonNullable<AuthRequest['user']>): Promise<NoteRecord | null> {
   const tenantScope = user.isSuperAdmin ? {} : { tenantId: user.tenantId };
-  const [lead, booking] = await Promise.all([
+  const [lead, booking, opportunity] = await Promise.all([
     prisma.lead.findFirst({
       where: { id: recordId, ...tenantScope },
       select: { id: true, tenantId: true, notes: true, ownerId: true, creatorId: true },
@@ -43,11 +52,16 @@ async function findNoteRecord(recordId: string, user: NonNullable<AuthRequest['u
       where: { id: recordId, ...tenantScope },
       select: { id: true, tenantId: true, notes: true, ownerId: true, creatorId: true, leadId: true },
     }),
+    prisma.opportunity.findFirst({
+      where: { id: recordId, ...tenantScope },
+      select: { id: true, tenantId: true, notes: true, ownerId: true, creatorId: true, leadId: true },
+    }),
   ]);
 
-  if (lead && booking) return null;
+  if ([lead, booking, opportunity].filter(Boolean).length > 1) return null;
   if (lead) return { type: 'Lead', ...lead };
   if (booking) return { type: 'Booking', ...booking };
+  if (opportunity) return { type: 'Opportunity', ...opportunity };
   return null;
 }
 
@@ -58,14 +72,15 @@ async function hasNotePermission(
 ): Promise<boolean> {
   if (user.isSuperAdmin) return true;
   const permissions = await EffectivePermissionService.getEffectivePermissionsCached(user, user.id);
-  const moduleName = record.type === 'Lead' ? 'LEAD' : 'BOOKING';
+  const moduleName = record.type === 'Lead' ? 'LEAD' : record.type === 'Booking' ? 'BOOKING' : 'OPPORTUNITY';
   return EffectivePermissionService.hasPermissionIn(permissions, `${moduleName}_${action}`);
 }
 
 async function canAccessNoteRecord(user: NonNullable<AuthRequest['user']>, record: NoteRecord): Promise<boolean> {
   if (user.isSuperAdmin) return true;
   if (record.type === 'Lead') return canAccessLead(user, record);
-  return canAccessBooking(user, record);
+  if (record.type === 'Booking') return canAccessBooking(user, record);
+  return canAccessOpportunity(user, record);
 }
 
 function formatIndiaTimestamp(date: Date): string {
@@ -141,14 +156,26 @@ router.post('/:recordId', async (req: AuthRequest, res: Response) => {
         return updated;
       }
 
-      await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${record.id} AND "tenantId" = ${record.tenantId} FOR UPDATE`;
-      const current = await tx.booking.findFirst({
+      if (record.type === 'Booking') {
+        await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${record.id} AND "tenantId" = ${record.tenantId} FOR UPDATE`;
+        const current = await tx.booking.findFirst({
+          where: { id: record.id, tenantId: record.tenantId },
+          select: { notes: true },
+        });
+        if (!current) throw new Error('Note record no longer exists');
+        const updated = appendNote(current.notes, authorName, note);
+        await tx.booking.update({ where: { id: record.id }, data: { notes: updated.notes } });
+        return updated;
+      }
+
+      await tx.$queryRaw`SELECT "id" FROM "Opportunity" WHERE "id" = ${record.id} AND "tenantId" = ${record.tenantId} FOR UPDATE`;
+      const current = await tx.opportunity.findFirst({
         where: { id: record.id, tenantId: record.tenantId },
         select: { notes: true },
       });
       if (!current) throw new Error('Note record no longer exists');
       const updated = appendNote(current.notes, authorName, note);
-      await tx.booking.update({ where: { id: record.id }, data: { notes: updated.notes } });
+      await tx.opportunity.update({ where: { id: record.id }, data: { notes: updated.notes } });
       return updated;
     });
 

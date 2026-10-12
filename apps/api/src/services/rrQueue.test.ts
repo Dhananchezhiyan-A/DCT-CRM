@@ -5,8 +5,12 @@ import {
   assignSiteVisitToSVCInTransaction,
   calculateQueueMatchScore,
   findApplicableRRQueue,
+  findProjectRRQueue,
+  getLeadSourceHierarchy,
+  getTertiarySourceHierarchy,
   hasLeadAssignmentRelevantChanges,
   RoundRobinAssignmentService,
+  rrQueueCriteriaForLead,
   selectNextProjectRRMemberInTransaction,
   selectNextSequenceMember,
 } from './rrQueue';
@@ -15,7 +19,7 @@ function mockTransaction() {
   return {
     $queryRaw: vi.fn().mockResolvedValue([{ id: 'queue-1' }]),
     siteVisit: { findFirst: vi.fn(), update: vi.fn() },
-    rRQueue: { findFirst: vi.fn(), update: vi.fn() },
+    rRQueue: { findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
     rRQueueMember: { update: vi.fn() },
     lead: { findFirst: vi.fn(), update: vi.fn() },
     user: { findFirst: vi.fn() },
@@ -164,6 +168,124 @@ describe('findApplicableRRQueue', () => {
     const result = await findApplicableRRQueue('tenant-1', { projectId: 'proj-1', status: 'NEW', source: 'FACEBOOK', priority: 'HOT' }, tx);
     expect(result?.id).toBe('q-2');
   });
+
+  it('does not route a lead to a queue whose configured source mismatches', async () => {
+    const queues = [{
+      id: 'q-facebook',
+      projectId: 'proj-1',
+      leadStatus: ['NEW'],
+      leadSource: ['FACEBOOK'],
+    }];
+    const tx = {
+      rRQueue: { findMany: async () => queues },
+      project: { findFirst: async () => ({ name: 'Sameera Iris' }) },
+    } as any;
+
+    const result = await findApplicableRRQueue('tenant-1', {
+      projectId: 'proj-1',
+      status: 'NEW',
+      source: 'WEBSITE',
+    }, tx);
+
+    expect(result).toBeNull();
+  });
+});
+
+describe('findProjectRRQueue', () => {
+  it('selects the project queue that matches the lead status and source', async () => {
+    const queues = [
+      { id: 'q-facebook', projectId: 'project-1', leadStatus: ['NEW'], leadSource: ['FACEBOOK'] },
+      { id: 'q-website', projectId: 'project-1', leadStatus: ['NEW'], leadSource: ['WEBSITE'] },
+    ];
+    const tx = { rRQueue: { findMany: vi.fn().mockResolvedValue(queues) } } as any;
+
+    const result = await findProjectRRQueue('tenant-1', 'project-1', 'SVC', tx, {
+      status: 'NEW',
+      source: 'WEBSITE',
+    });
+
+    expect(result?.id).toBe('q-website');
+  });
+
+  it('matches a project-interested queue to the correct project, source, and requested member type', async () => {
+    const queues = [
+      {
+        id: 'q-other-project',
+        projectId: null,
+        projectInterested: ['DCT Valley'],
+        leadSource: ['WEBSITE'],
+      },
+      {
+        id: 'q-facebook',
+        projectId: null,
+        projectInterested: ['DCT Heights'],
+        leadSource: ['FACEBOOK'],
+      },
+      {
+        id: 'q-heights-website-svc',
+        projectId: null,
+        projectInterested: ['DCT Heights'],
+        leadSource: ['WEBSITE'],
+        members: [{ userType: 'SVC' }],
+      },
+    ];
+    const tx = {
+      rRQueue: { findMany: vi.fn().mockResolvedValue(queues) },
+      project: { findFirst: vi.fn().mockResolvedValue({ name: 'DCT Heights' }) },
+    } as any;
+
+    const result = await findProjectRRQueue('tenant-1', 'heights-id', 'SVC', tx, {
+      status: 'PROSPECT',
+      source: 'WEBSITE',
+    });
+
+    expect(result?.id).toBe('q-heights-website-svc');
+    expect(tx.rRQueue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { tenantId: 'tenant-1', active: true, members: { some: { userType: 'SVC' } } },
+    }));
+  });
+
+  it('uses last source of enquiry before the Lead source enum for routing', () => {
+    expect(getLeadSourceHierarchy({ source: 'WEBSITE', lastSource: 'GOOGLE ADS' })).toBe('GOOGLE ADS');
+    expect(getTertiarySourceHierarchy({ lastCampaign: 'Campaign A' })).toBe('Campaign A');
+  });
+
+  it('matches a workflow queue by project and source even when its status is a different workflow stage', async () => {
+    const queue = {
+      ...svcQueue(),
+      projectId: 'project-1',
+      leadStatus: ['NEW'],
+      leadSource: ['WEBSITE'],
+    };
+    const tx = { rRQueue: { findMany: vi.fn().mockResolvedValue([queue]) } } as any;
+
+    const selected = await findProjectRRQueue(
+      'tenant-1',
+      'project-1',
+      'SVC',
+      tx,
+      rrQueueCriteriaForLead({ projectId: 'project-1', status: 'INCOMING', lastSource: 'WEBSITE' }),
+    );
+
+    expect(selected?.id).toBe('svc-queue');
+  });
+
+  it('does not route a lead when no project queue matches its configured criteria', async () => {
+    const tx = {
+      rRQueue: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'q-facebook', projectId: 'project-1', leadStatus: ['NEW'], leadSource: ['FACEBOOK'] },
+        ]),
+      },
+    } as any;
+
+    const result = await findProjectRRQueue('tenant-1', 'project-1', 'SVC', tx, {
+      status: 'NEW',
+      source: 'WEBSITE',
+    });
+
+    expect(result).toBeNull();
+  });
 });
 
 describe('selectNextSequenceMember', () => {
@@ -199,6 +321,7 @@ describe('selectNextSequenceMember', () => {
   it('selects and advances a member only from the requested project and user type', async () => {
     const queue = salesQueue();
     const tx = mockTransaction();
+    tx.rRQueue.findMany.mockResolvedValue([salesQueue()]);
     tx.rRQueue.findFirst.mockResolvedValue(queue);
     tx.rRQueue.update.mockResolvedValue({});
     tx.rRQueueMember.update.mockResolvedValue({});
@@ -211,8 +334,8 @@ describe('selectNextSequenceMember', () => {
 
     expect(selected.queue.id).toBe('sales-queue');
     expect(selected.member.userId).toBe('sales-user');
-    expect(tx.rRQueue.findFirst).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      where: { tenantId: 'tenant-1', projectId: 'project-1', active: true, members: { some: { userType: 'Sales' } } },
+    expect(tx.rRQueue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { tenantId: 'tenant-1', active: true, members: { some: { userType: 'Sales' } } },
     }));
     expect(tx.rRQueue.update).toHaveBeenCalledWith({
       where: { id: 'sales-queue' },
@@ -222,14 +345,14 @@ describe('selectNextSequenceMember', () => {
 
   it('does not fall back to another project queue when the requested type is missing', async () => {
     const tx = mockTransaction();
-    tx.rRQueue.findFirst.mockResolvedValue(null);
+    tx.rRQueue.findMany.mockResolvedValue([]);
 
     await expect(selectNextProjectRRMemberInTransaction(tx, {
       tenantId: 'tenant-1',
       projectId: 'project-1',
       userType: 'CRM',
     })).rejects.toThrow('RR_QUEUE_NOT_CONFIGURED:CRM');
-    expect(tx.rRQueue.findFirst).toHaveBeenCalledTimes(1);
+    expect(tx.rRQueue.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('requires a project before selecting a round-robin member', async () => {
@@ -245,6 +368,7 @@ describe('selectNextSequenceMember', () => {
   it('assigns a lead and rotation state atomically to a project member', async () => {
     const tx = mockTransaction();
     const queue = salesQueue();
+    tx.rRQueue.findMany.mockResolvedValue([queue]);
     tx.rRQueue.findFirst.mockResolvedValue(queue);
     tx.rRQueue.update.mockResolvedValue({});
     tx.rRQueueMember.update.mockResolvedValue({});
@@ -277,6 +401,34 @@ describe('selectNextSequenceMember', () => {
     });
   });
 
+  it.each(['SVC', 'Recovery', 'CRM', 'Sales'])('%s assignment does not fall back across projects or lead sources', async (userType) => {
+    const tx = mockTransaction();
+    tx.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      tenantId: 'tenant-1',
+      projectId: 'project-1',
+      ownerId: 'presales-user',
+      status: 'INCOMING',
+      owner: { profile: { name: 'Presales' } },
+      lastSource: 'WEBSITE',
+    });
+    tx.rRQueue.findMany.mockResolvedValue([{
+      ...svcQueue(),
+      projectId: null,
+      projectInterested: ['Another Project'],
+      leadSource: ['FACEBOOK'],
+    }]);
+    await expect(assignLeadToProjectRoundRobinInTransaction(tx, {
+      tenantId: 'tenant-1',
+      leadId: 'lead-1',
+      projectId: 'project-1',
+      userType: userType as any,
+      actorId: 'admin',
+      reason: 'Test assignment',
+    })).rejects.toThrow(`RR_QUEUE_NOT_CONFIGURED:${userType}`);
+    expect(tx.lead.update).not.toHaveBeenCalled();
+  });
+
   describe('SVC to Sales site visit handoff', () => {
     it('assigns scheduled visits and the lead only to the project SVC member', async () => {
       const tx = mockTransaction();
@@ -289,6 +441,7 @@ describe('selectNextSequenceMember', () => {
           owner: { profile: { name: 'Sales Executive' } },
         },
       });
+      tx.rRQueue.findMany.mockResolvedValue([svcQueue()]);
       tx.rRQueue.findFirst.mockResolvedValue(svcQueue());
       tx.rRQueue.update.mockResolvedValue({});
       tx.rRQueueMember.update.mockResolvedValue({});
@@ -307,15 +460,15 @@ describe('selectNextSequenceMember', () => {
       expect(tx.siteVisit.update).toHaveBeenCalledWith(expect.objectContaining({
         data: { assigneeId: 'svc-user' },
       }));
-      expect(tx.rRQueue.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-        where: { tenantId: 'tenant-1', projectId: 'project-1', active: true, members: { some: { userType: 'SVC' } } },
+      expect(tx.rRQueue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { tenantId: 'tenant-1', active: true, members: { some: { userType: 'SVC' } } },
       }));
     });
 
     it('does not fall back to the actor when a project has no SVC queue', async () => {
       const tx = mockTransaction();
       tx.siteVisit.findFirst.mockResolvedValue(completedVisit({ status: 'SCHEDULED', completedAt: null, completedById: null }));
-      tx.rRQueue.findFirst.mockResolvedValue(null);
+      tx.rRQueue.findMany.mockResolvedValue([]);
 
       await expect(assignSiteVisitToSVCInTransaction(tx, {
         siteVisitId: 'visit-1',
@@ -329,14 +482,15 @@ describe('selectNextSequenceMember', () => {
       const tx = mockTransaction();
       const queue = salesQueue();
       tx.siteVisit.findFirst.mockResolvedValue(completedVisit());
+      tx.rRQueue.findMany.mockResolvedValue([queue]);
       tx.rRQueue.findFirst.mockResolvedValue(queue);
       tx.user.findFirst.mockResolvedValue({ profile: { name: 'SVC' } });
 
       const result = await assignCompletedSiteVisitToSalesInTransaction(tx, 'visit-1', 'tenant-1');
 
       expect(result).toMatchObject({ assignedUserId: 'sales-user', queueId: 'sales-queue', pendingReason: null });
-      expect(tx.rRQueue.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-        where: { tenantId: 'tenant-1', projectId: 'project-1', active: true, members: { some: { userType: 'Sales' } } },
+      expect(tx.rRQueue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { tenantId: 'tenant-1', active: true, members: { some: { userType: 'Sales' } } },
       }));
       expect(tx.lead.update).toHaveBeenCalledWith(expect.objectContaining({
         where: { id: 'lead-1' },
@@ -356,7 +510,7 @@ describe('selectNextSequenceMember', () => {
     it('leaves a completed visit pending instead of selecting an unrelated project queue', async () => {
       const tx = mockTransaction();
       tx.siteVisit.findFirst.mockResolvedValue(completedVisit());
-      tx.rRQueue.findFirst.mockResolvedValue(null);
+      tx.rRQueue.findMany.mockResolvedValue([]);
 
       const result = await assignCompletedSiteVisitToSalesInTransaction(tx, 'visit-1', 'tenant-1');
 
@@ -393,6 +547,7 @@ describe('selectNextSequenceMember', () => {
       const queue = salesQueue();
       queue.members[0].isAvailable = false;
       tx.siteVisit.findFirst.mockResolvedValue(completedVisit());
+      tx.rRQueue.findMany.mockResolvedValue([queue]);
       tx.rRQueue.findFirst.mockResolvedValue(queue);
 
       const result = await assignCompletedSiteVisitToSalesInTransaction(tx, 'visit-1', 'tenant-1');
@@ -408,7 +563,7 @@ describe('selectNextSequenceMember', () => {
 
       await expect(assignCompletedSiteVisitToSalesInTransaction(tx, 'visit-1', 'tenant-1'))
         .rejects.toThrow('SITE_VISIT_NOT_GRE_COMPLETED');
-      expect(tx.rRQueue.findFirst).not.toHaveBeenCalled();
+      expect(tx.rRQueue.findMany).not.toHaveBeenCalled();
     });
   });
 

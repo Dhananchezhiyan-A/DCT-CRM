@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 interface StickyNotesCardProps {
   recordId: string;
+  canAdd?: boolean;
 }
 
 interface ParsedNote {
@@ -38,7 +39,7 @@ function parseNoteBlock(block: string): ParsedNote | null {
   };
 }
 
-export default function StickyNotesCard({ recordId }: StickyNotesCardProps) {
+export default function StickyNotesCard({ recordId, canAdd = true }: StickyNotesCardProps) {
   const { toast } = useToast();
   const [notes, setNotes] = React.useState("");
   const [loading, setLoading] = React.useState(true);
@@ -102,20 +103,20 @@ export default function StickyNotesCard({ recordId }: StickyNotesCardProps) {
 
   return (
     <>
-      <Card className="my-0 box-border w-full rounded-md border shadow-sm">
-        <CardHeader className="flex min-h-[72px] flex-row items-center justify-between space-y-0 gap-3 p-3">
+      <Card className="my-0 box-border w-full rounded-md border-slate-200 shadow-sm">
+        <CardHeader className="flex min-h-[64px] flex-row items-center justify-between space-y-0 gap-3 border-b border-slate-200 bg-white p-3">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-orange-500">
-              <StickyNote className="h-6 w-6 text-white" aria-hidden="true" />
+              <StickyNote className="h-5 w-5 text-white" aria-hidden="true" />
             </span>
-            <h2 className="text-base font-semibold">Sticky Notes</h2>
+            <h2 className="text-[12px] font-semibold">Sticky Notes</h2>
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="h-8 w-8 rounded-full bg-sky-700 text-white hover:bg-sky-800 hover:text-white"
+              className="h-8 w-8 rounded-full bg-[#08749f] text-white hover:bg-[#066487] hover:text-white"
               aria-label="Refresh notes"
               onClick={() => void refreshNotes()}
               disabled={loading}
@@ -126,10 +127,12 @@ export default function StickyNotesCard({ recordId }: StickyNotesCardProps) {
                 <RefreshCw className="h-4 w-4" />
               )}
             </Button>
-            <Button type="button" size="sm" className="bg-blue-700 hover:bg-blue-800" onClick={() => setDialogOpen(true)}>
-              <Plus className="mr-1.5 h-4 w-4" />
-              Add Notes
-            </Button>
+            {canAdd && (
+              <Button type="button" size="sm" className="h-8 bg-[#d9ebf5] px-3 text-[10px] font-medium text-[#397b9b] shadow-none hover:bg-[#c9e1ef] hover:text-[#286b8d]" onClick={() => setDialogOpen(true)}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                Add Notes
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="p-3 pt-0">
@@ -156,21 +159,21 @@ export default function StickyNotesCard({ recordId }: StickyNotesCardProps) {
               noteBlocks.map((block, index) => {
                 const parsed = parseNoteBlock(block);
                 return (
-                  <div key={`${index}-${block.slice(0, 24)}`} className="rounded-md border bg-muted/20 p-3">
+                  <div key={`${index}-${block.slice(0, 24)}`} className="rounded-md border border-slate-200 bg-white p-3">
                     {parsed ? (
                       <>
                         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                          <p className="text-sm font-semibold">Note {parsed.number}</p>
-                          <p className="text-xs text-muted-foreground">
+                          <p className="text-[11px] font-semibold">Note {parsed.number}</p>
+                          <p className="text-[10px] text-muted-foreground">
                             {parsed.author} · {parsed.timestamp}
                           </p>
                         </div>
-                        <p className="output-font mt-2 whitespace-pre-wrap break-words text-sm font-semibold leading-6">
+                        <p className="output-font mt-2 whitespace-pre-wrap break-words text-[11px] font-semibold leading-5">
                           {parsed.content}
                         </p>
                       </>
                     ) : (
-                      <p className="whitespace-pre-wrap break-words text-sm leading-6">{block}</p>
+                      <p className="whitespace-pre-wrap break-words text-[11px] leading-5">{block}</p>
                     )}
                   </div>
                 );

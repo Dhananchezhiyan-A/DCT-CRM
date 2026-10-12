@@ -5,6 +5,7 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { authorize } from '../middleware/authorization';
 import { auditLog } from '../middleware/audit';
 import { getOpportunityVisibilityFilter } from '../services/recordAccess';
+import { installmentStatus, isVerifiedPaymentStatus, money } from '../services/commercialFinance';
 
 const router = Router();
 
@@ -227,7 +228,7 @@ router.get('/:id', authorize('Opportunity', 'read'), async (req: AuthRequest, re
         unit: { select: { id: true, number: true, type: true, area: true, price: true } },
         siteVisit: { select: { id: true, siteVisitNumber: true, status: true, completedAt: true } },
         quotations: { orderBy: { createdAt: 'desc' }, select: { id: true, number: true, totalAmount: true, status: true } },
-        bookings: { select: { id: true, number: true, status: true, totalAmount: true } },
+        bookings: { select: { id: true, number: true, status: true, totalAmount: true, quotationId: true } },
         activities: { take: 10, orderBy: { createdAt: 'desc' }, include: { user: { select: { firstName: true, lastName: true } } } },
         tasks: { take: 10, orderBy: { createdAt: 'desc' }, include: { owner: { select: { firstName: true, lastName: true } } } },
       },
@@ -241,6 +242,140 @@ router.get('/:id', authorize('Opportunity', 'read'), async (req: AuthRequest, re
   } catch (error) {
     console.error('Get opportunity error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch opportunity' });
+  }
+});
+
+router.get('/:id/financial-summary', authorize('Opportunity', 'read'), async (req: AuthRequest, res: Response) => {
+  try {
+    const opportunity = await prisma.opportunity.findFirst({
+      where: { ...(await getOpportunityVisibilityFilter(req.user!.tenantId, req.user!.id, 'read')), id: req.params.id },
+      include: {
+        quotations: {
+          where: { status: 'APPROVED' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { id: true, number: true, totalAmount: true, status: true },
+        },
+        bookings: {
+          where: { status: { not: 'CANCELLED' } },
+          include: {
+            payments: {
+              select: {
+                id: true,
+                bookingId: true,
+                amount: true,
+                status: true,
+                paymentDate: true,
+                reference: true,
+                receipt: { select: { id: true, receiptNumber: true, status: true } },
+                allocations: { select: { amount: true } },
+              },
+            },
+            installments: {
+              orderBy: { sequenceNumber: 'asc' },
+              include: {
+                allocations: {
+                  include: {
+                    payment: { select: { id: true, status: true, paymentDate: true, receipt: { select: { status: true } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!opportunity) return res.status(404).json({ success: false, error: 'Opportunity not found' });
+
+    const bookings = opportunity.bookings;
+    const verifiedPaymentAmount = bookings.reduce(
+      (sum, booking) => sum.plus(
+        booking.payments
+          .filter((payment) => isVerifiedPaymentStatus(payment.status) && payment.receipt?.status !== 'CANCELLED')
+          .reduce((paymentSum, payment) => paymentSum.plus(money(payment.amount)), money(0)),
+      ),
+      money(0),
+    );
+    const installments = bookings.flatMap((booking) => booking.installments.map((installment) => {
+      const verifiedAllocations = installment.allocations.filter((allocation) =>
+        isVerifiedPaymentStatus(allocation.payment.status) && allocation.payment.receipt?.status !== 'CANCELLED',
+      );
+      const receivedAmount = verifiedAllocations.reduce(
+        (sum, allocation) => sum.plus(allocation.amount),
+        money(0),
+      );
+      const balance = installmentStatus(installment.scheduledAmount, receivedAmount, installment.dueDate);
+      return {
+        id: installment.id,
+        bookingId: booking.id,
+        sequenceNumber: installment.sequenceNumber,
+        name: installment.name,
+        description: installment.description,
+        dueDate: installment.dueDate,
+        scheduledAmount: money(installment.scheduledAmount).toNumber(),
+        receivedAmount: receivedAmount.toNumber(),
+        outstandingAmount: balance.outstandingAmount.toNumber(),
+        status: balance.status,
+      };
+    }));
+    const scheduledAmount = installments.reduce((sum, installment) => sum.plus(installment.scheduledAmount), money(0));
+    const allocatedAmount = installments.reduce((sum, installment) => sum.plus(installment.receivedAmount), money(0));
+    const installmentOutstandingAmount = installments.reduce((sum, installment) => sum.plus(installment.outstandingAmount), money(0));
+    const overdueAmount = installments
+      .filter((installment) => installment.status === 'OVERDUE')
+      .reduce((sum, installment) => sum.plus(installment.outstandingAmount), money(0));
+    const upcomingAmount = installments
+      .filter((installment) => installment.status === 'UPCOMING' || installment.status === 'DUE')
+      .reduce((sum, installment) => sum.plus(installment.outstandingAmount), money(0));
+    const bookingAmount = bookings.reduce((sum, booking) => sum.plus(money(booking.totalAmount)), money(0));
+    const unallocatedPaymentAmount = money(verifiedPaymentAmount.minus(allocatedAmount));
+    const bookingOutstandingAmount = money(bookingAmount.minus(verifiedPaymentAmount));
+    const outstandingAmount = bookingOutstandingAmount.gt(0)
+      ? bookingOutstandingAmount
+      : money(0);
+
+    res.json({
+      success: true,
+      data: {
+        approvedQuotation: opportunity.quotations[0]
+          ? {
+              ...opportunity.quotations[0],
+              totalAmount: money(opportunity.quotations[0].totalAmount).toNumber(),
+            }
+          : null,
+        bookingAmount: bookingAmount.toNumber(),
+        scheduledAmount: scheduledAmount.toNumber(),
+        verifiedPaymentAmount: verifiedPaymentAmount.toNumber(),
+        allocatedAmount: allocatedAmount.toNumber(),
+        unallocatedPaymentAmount: unallocatedPaymentAmount.toNumber(),
+        outstandingAmount: outstandingAmount.toNumber(),
+        installmentOutstandingAmount: installmentOutstandingAmount.toNumber(),
+        overdueAmount: overdueAmount.toNumber(),
+        upcomingAmount: upcomingAmount.toNumber(),
+        installments,
+        payments: bookings.flatMap((booking) => booking.payments.map((payment) => {
+          const allocatedAmount = isVerifiedPaymentStatus(payment.status) && payment.receipt?.status !== 'CANCELLED'
+            ? payment.allocations.reduce((sum, allocation) => sum.plus(allocation.amount), money(0))
+            : money(0);
+          const paymentAmount = money(payment.amount);
+          return {
+            id: payment.id,
+            bookingId: booking.id,
+            bookingNumber: booking.number,
+            amount: paymentAmount.toNumber(),
+            status: payment.status,
+            paymentDate: payment.paymentDate,
+            reference: payment.reference,
+            allocatedAmount: allocatedAmount.toNumber(),
+            unallocatedAmount: money(paymentAmount.minus(allocatedAmount)).toNumber(),
+            receipt: payment.receipt,
+          };
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Get opportunity financial summary error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch opportunity financial summary' });
   }
 });
 

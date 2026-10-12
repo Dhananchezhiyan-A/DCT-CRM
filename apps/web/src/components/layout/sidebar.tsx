@@ -17,7 +17,9 @@ import {
   FileText,
   CalendarCheck,
   CreditCard,
+  Receipt,
   FolderKanban,
+  Building,
   CheckSquare,
   BarChart3,
   Settings,
@@ -70,14 +72,19 @@ export function getNavigationByProfile(
   if (hasEffectivePermission("PAYMENT_READ")) {
     nav.push({ title: "Payments", href: "/payments", icon: CreditCard });
   }
+  if (hasEffectivePermission("RECEIPT_READ")) {
+    nav.push({ title: "Receipts", href: "/receipts", icon: Receipt });
+  }
   if (profileName?.toLowerCase() !== "sales" && hasEffectivePermission("PROJECT_READ")) {
     nav.push({ title: "Projects", href: "/projects", icon: FolderKanban });
+  }
+  if (hasEffectivePermission("UNIT_READ")) {
+    nav.push({ title: "Units", href: "/units", icon: Building });
   }
   if (hasEffectivePermission("TASK_READ")) {
     nav.push({ title: "Tasks", href: "/tasks", icon: CheckSquare });
   }
-  // Dashboards nav: admin-only per sidebar spec ("Presales/SVC must see ONLY
-  // Home, Leads, Site Visits"). DASHBOARD_READ alone is NOT sufficient — every
+  // Dashboards nav is admin-only. DASHBOARD_READ alone is NOT sufficient — every
   // profile holds it because the home page API (homepages.ts) requires it.
   if ((isSuperAdmin || isAdmin) && hasEffectivePermission("DASHBOARD_READ")) {
     nav.push({ title: "Dashboards", href: "/dashboards", icon: LayoutDashboard });
@@ -120,11 +127,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       )}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 w-64 bg-card border-r transition-transform duration-300 ease-in-out lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 w-64 overflow-hidden border-r border-white/10 bg-[linear-gradient(180deg,#278db8_0%,#1479a8_55%,#075d91_100%)] text-white shadow-xl transition-transform duration-300 ease-in-out lg:translate-x-0",
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="flex h-14 items-center justify-between border-b px-4">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-44 opacity-30">
+          <svg viewBox="0 0 256 176" preserveAspectRatio="none" className="h-full w-full">
+            <path d="M0 92C58 42 95 76 145 48s76-25 111-4v132H0Z" fill="#55c7ee" />
+            <path d="M0 126c49-41 91-28 139-54s83-25 117-11v115H0Z" fill="#074f86" />
+          </svg>
+        </div>
+        <div className="relative z-10 flex h-16 items-center justify-between border-b border-white/15 px-4">
           <Link href="/home" className="flex items-center gap-2">
             {tenant && (tenant as any).logo ? (
               <img
@@ -133,27 +146,27 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 className="h-7 w-7 rounded object-cover"
               />
             ) : (
-              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary">
-                <span className="text-xs font-bold text-primary-foreground">DCT</span>
+              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-600 shadow-sm">
+                <span className="text-xs font-bold text-white">DCT</span>
               </div>
             )}
-            <span className="text-sm font-semibold">{isSuperAdmin ? "CRM" : tenant?.name || "CRM"}</span>
+            <span className="text-sm font-semibold text-white">{isSuperAdmin ? "CRM" : tenant?.name || "CRM"}</span>
           </Link>
-          <Button variant="ghost" size="icon" onClick={onClose} className="lg:hidden">
+          <Button variant="ghost" size="icon" onClick={onClose} className="text-white hover:bg-white/15 hover:text-white lg:hidden">
             <X className="h-4 w-4" />
           </Button>
         </div>
-        <ScrollArea className="h-[calc(100vh-3.5rem)] py-3">
+        <ScrollArea className="relative z-10 h-[calc(100vh-4rem)] py-3">
           <nav className="space-y-0.5 px-2">
             {navigation.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors hover:bg-accent hover:text-accent-foreground",
+                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white",
                   isActive(item.href)
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground"
+                    ? "bg-white/20 text-white shadow-sm ring-1 ring-inset ring-white/10"
+                    : ""
                 )}
               >
                 <item.icon className="h-4 w-4 shrink-0" />

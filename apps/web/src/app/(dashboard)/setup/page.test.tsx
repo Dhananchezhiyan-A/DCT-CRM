@@ -43,4 +43,22 @@ describe("SetupPage", () => {
     expect(screen.queryByRole("link", { name: /Object Manager/i })).not.toBeInTheDocument();
     auth.canManageObjects = true;
   });
+
+  it("groups portal links under Custom Portal Details and omits duplicate and recycle-bin links", () => {
+    render(<SetupPage />);
+
+    expect(screen.getByRole("heading", { name: "Custom Portal Details" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /CP Portal$/i })).toHaveAttribute(
+      "href",
+      "http://localhost:3002/login",
+    );
+    expect(screen.getByRole("link", { name: /GRE Forms/i })).toHaveAttribute(
+      "href",
+      "/setup/developer/gre",
+    );
+    expect(screen.queryByRole("heading", { name: "Sites" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "GRE" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Duplicate Management/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Recycle Bin/i })).not.toBeInTheDocument();
+  });
 });

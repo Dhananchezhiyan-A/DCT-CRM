@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,10 +21,12 @@ import { followUpApi } from "@/lib/api";
 
 interface FollowUp {
   id: string;
+  followUpNumber: string;
   title: string;
   description: string;
   dueDate: string;
   isCompleted: boolean;
+  isMissed: boolean;
   completedAt?: string;
   owner: string;
   leadId?: string;
@@ -45,6 +48,7 @@ const columns: ColumnDef<FollowUp>[] = [
           {item.description && (
             <p className="text-sm text-muted-foreground line-clamp-1">{item.description}</p>
           )}
+          <p className="text-xs text-muted-foreground">{item.followUpNumber}</p>
         </div>
       );
     },
@@ -56,7 +60,7 @@ const columns: ColumnDef<FollowUp>[] = [
       const value = row.getValue("dueDate");
       if (!value) return "-";
       const date = new Date(value as string);
-      const isOverdue = !row.original.isCompleted && date < new Date();
+      const isOverdue = !row.original.isCompleted && !row.original.isMissed && date < new Date();
       return (
         <div className="flex items-center gap-1">
           <Clock className="h-4 w-4" />
@@ -70,9 +74,10 @@ const columns: ColumnDef<FollowUp>[] = [
     header: "Status",
     cell: ({ row }) => {
       const completed = row.original.isCompleted;
+      const missed = row.original.isMissed;
       return (
-        <Badge className={completed ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}>
-          {completed ? "Completed" : "Open"}
+        <Badge className={completed ? "bg-green-100 text-green-800" : missed ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}>
+          {completed ? "Completed" : missed ? "Missed" : "Scheduled"}
         </Badge>
       );
     },
@@ -106,10 +111,12 @@ function mapFollowUp(item: any): FollowUp {
     : undefined;
   return {
     id: item.id,
+    followUpNumber: item.followUpNumber,
     title: item.title,
     description: item.description || "",
     dueDate: item.dueDate || "",
     isCompleted: Boolean(item.isCompleted),
+    isMissed: Boolean(item.isMissed),
     completedAt: item.completedAt || undefined,
     owner: owner || "-",
     leadId: item.leadId || undefined,
@@ -119,6 +126,8 @@ function mapFollowUp(item: any): FollowUp {
 }
 
 export default function FollowUpsPage() {
+  const searchParams = useSearchParams();
+  const leadId = searchParams.get("leadId");
   const { toast } = useToast();
   const [currentPage, setCurrentPage] = React.useState(1);
   const [status, setStatus] = React.useState("");
@@ -132,8 +141,9 @@ export default function FollowUpsPage() {
     try {
       setIsLoading(true);
       const params: Record<string, any> = { page: currentPage, limit: 20, sortBy: "dueDate", sortOrder: "asc" };
-      if (status) params.isCompleted = status;
+      if (status) params.status = status;
       if (search.trim()) params.search = search.trim();
+      if (leadId) params.leadId = leadId;
       const res = await followUpApi.list(params);
       if (res.data.success && res.data.data) {
         setFollowUps(res.data.data.map(mapFollowUp));
@@ -153,7 +163,7 @@ export default function FollowUpsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentPage, search, status, toast]);
+  }, [currentPage, leadId, search, status, toast]);
 
   React.useEffect(() => {
     void loadFollowUps();
@@ -223,7 +233,9 @@ export default function FollowUpsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">Follow-ups</h1>
-          <p className="text-muted-foreground">Track every open follow-up across your leads</p>
+          <p className="text-muted-foreground">
+            {leadId ? "Follow-ups related to this lead" : "Track every open follow-up across your leads"}
+          </p>
         </div>
       </div>
 
@@ -244,8 +256,9 @@ export default function FollowUpsPage() {
               setCurrentPage(1);
             }}
             options={[
-              { label: "Open", value: "false" },
-              { label: "Completed", value: "true" },
+              { label: "Scheduled", value: "SCHEDULED" },
+              { label: "Completed", value: "COMPLETED" },
+              { label: "Missed", value: "MISSED" },
             ]}
             placeholder="All Statuses"
           />

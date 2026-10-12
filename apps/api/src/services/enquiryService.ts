@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@dct-crm/db';
+import { normalizeLeadEmail, normalizeLeadPhone } from './leadDuplicateDetection';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -20,8 +21,11 @@ export interface CreateEnquiryInput {
   tertiaryPhone?: string | null;
   countryCode?: string | null;
   secondaryCountryCode?: string | null;
+  tertiaryCountryCode?: string | null;
   email?: string | null;
   secondaryEmail?: string | null;
+  tertiaryEmail?: string | null;
+  originalSubmissionId?: string | null;
   medium?: string | null;
   description?: string | null;
   channelPartner?: string | null;
@@ -52,12 +56,82 @@ async function nextEnquiryNumber(db: Db, tenantId: string): Promise<string> {
   return `ENQ-${String(sequence.nextValue).padStart(6, '0')}`;
 }
 
-export async function createEnquiryInTransaction(
+export async function createEnquiryInTransactionWithStatus(
   db: Prisma.TransactionClient,
   input: CreateEnquiryInput,
 ) {
+  const countryCode = input.countryCode || inferCountryCode(input.phone);
+  const secondaryCountryCode = input.secondaryCountryCode || inferCountryCode(input.secondaryPhone) || countryCode;
+  const tertiaryCountryCode = input.tertiaryCountryCode || secondaryCountryCode || countryCode;
+  const normalizedPhones = [
+    normalizeLeadPhone(input.phone, countryCode),
+    normalizeLeadPhone(input.secondaryPhone, secondaryCountryCode),
+    normalizeLeadPhone(input.tertiaryPhone, tertiaryCountryCode),
+  ];
+  const normalizedEmails = [input.email, input.secondaryEmail, input.tertiaryEmail]
+    .map((email) => normalizeLeadEmail(email))
+    .filter((email): email is string => Boolean(email));
+  const existingSubmission = input.originalSubmissionId
+    ? await db.enquiry.findFirst({
+        where: {
+          tenantId: input.tenantId,
+          originalSubmissionId: input.originalSubmissionId,
+        },
+        include: { project: { select: { id: true, name: true } } },
+      })
+    : null;
+  if (existingSubmission) return { enquiry: existingSubmission, created: false };
+
+  const existingSources = input.originalSubmissionId
+    ? []
+    : await db.enquiry.findMany({
+        where: {
+          tenantId: input.tenantId,
+          leadId: input.leadId,
+          source: input.source,
+          subSource: input.subSource || null,
+          campaignId: input.campaignId || null,
+          campaign: input.campaign || null,
+          projectId: input.projectId || null,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        select: {
+          id: true,
+          phone: true,
+          secondaryPhone: true,
+          tertiaryPhone: true,
+          countryCode: true,
+          secondaryCountryCode: true,
+          tertiaryCountryCode: true,
+          email: true,
+          secondaryEmail: true,
+          tertiaryEmail: true,
+        },
+      });
+  const existingSource = existingSources.find((source) => {
+    const sourcePhones = [
+      normalizeLeadPhone(source.phone, source.countryCode),
+      normalizeLeadPhone(source.secondaryPhone, source.secondaryCountryCode || source.countryCode),
+      normalizeLeadPhone(source.tertiaryPhone, source.tertiaryCountryCode || source.secondaryCountryCode || source.countryCode),
+    ];
+    const hasPhoneMatch = normalizedPhones.some((candidate) =>
+      candidate && sourcePhones.some((sourcePhone) => sourcePhone?.e164 === candidate.e164),
+    );
+    const sourceEmails = [source.email, source.secondaryEmail, source.tertiaryEmail]
+      .map((email) => normalizeLeadEmail(email));
+    const hasEmailMatch = normalizedEmails.some((email) => sourceEmails.includes(email));
+    return hasPhoneMatch || hasEmailMatch;
+  });
+  if (existingSource) {
+    const enquiry = await db.enquiry.findUniqueOrThrow({
+      where: { id: existingSource.id },
+      include: { project: { select: { id: true, name: true } } },
+    });
+    return { enquiry, created: false };
+  }
   const enquiryNumber = await nextEnquiryNumber(db, input.tenantId);
-  return db.enquiry.create({
+  const enquiry = await db.enquiry.create({
     data: {
       enquiryNumber,
       tenantId: input.tenantId,
@@ -74,10 +148,13 @@ export async function createEnquiryInTransaction(
       phone: input.phone || null,
       secondaryPhone: input.secondaryPhone || null,
       tertiaryPhone: input.tertiaryPhone || null,
-      countryCode: input.countryCode || inferCountryCode(input.phone),
-      secondaryCountryCode: input.secondaryCountryCode || inferCountryCode(input.secondaryPhone),
+      countryCode,
+      secondaryCountryCode,
+      tertiaryCountryCode,
       email: input.email || null,
       secondaryEmail: input.secondaryEmail || null,
+      tertiaryEmail: input.tertiaryEmail || null,
+      originalSubmissionId: input.originalSubmissionId || null,
       medium: input.medium || null,
       description: input.description || null,
       channelPartner: input.channelPartner || null,
@@ -88,6 +165,15 @@ export async function createEnquiryInTransaction(
     },
     include: { project: { select: { id: true, name: true } } },
   });
+  return { enquiry, created: true };
+}
+
+export async function createEnquiryInTransaction(
+  db: Prisma.TransactionClient,
+  input: CreateEnquiryInput,
+) {
+  const result = await createEnquiryInTransactionWithStatus(db, input);
+  return result.enquiry;
 }
 
 export async function getLeadEnquiries(

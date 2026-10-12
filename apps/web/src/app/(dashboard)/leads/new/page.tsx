@@ -27,6 +27,7 @@ interface SalesUser {
 
 const SOURCE_OPTIONS = [
   { label: "Website", value: "WEBSITE" },
+  { label: "Facebook", value: "FACEBOOK" },
   { label: "Referral", value: "REFERRAL" },
   { label: "Cold Call", value: "COLD_CALL" },
   { label: "Advertisement", value: "ADVERTISEMENT" },
@@ -64,11 +65,13 @@ function Field({
   id,
   label,
   required,
+  error,
   children,
 }: {
   id: string;
   label: string;
   required?: boolean;
+  error?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -78,6 +81,7 @@ function Field({
         {label}
       </Label>
       {children}
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 }
@@ -88,6 +92,12 @@ export default function NewLeadPage() {
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
+  const [duplicateReview, setDuplicateReview] = React.useState<{
+    ambiguous: boolean;
+    inaccessibleMatches: boolean;
+    candidates: Array<{ id: string; leadNumber: string | null; name: string; projectName: string | null; matchedFields: string[] }>;
+  } | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [salesUsers, setSalesUsers] = React.useState<SalesUser[]>([]);
   const [formData, setFormData] = React.useState({
@@ -96,10 +106,14 @@ export default function NewLeadPage() {
     lastName: "",
     phone: "",
     secondaryPhone: "",
+    tertiaryPhone: "",
     country: "India",
     countryCode: "91",
+    secondaryCountryCode: "91",
+    tertiaryCountryCode: "91",
     email: "",
     secondaryEmail: "",
+    tertiaryEmail: "",
     source: "",
     projectId: "",
     leadInterest: "",
@@ -147,6 +161,8 @@ export default function NewLeadPage() {
   const updateField = (field: keyof typeof formData, value: string) => {
     setFormData((current) => ({ ...current, [field]: value }));
     setError(null);
+    setFieldErrors({});
+    setDuplicateReview(null);
   };
 
   const handleCountryChange = (country: string) => {
@@ -155,6 +171,8 @@ export default function NewLeadPage() {
       ...current,
       country,
       countryCode: selected?.code || current.countryCode,
+      secondaryCountryCode: selected?.code || current.secondaryCountryCode,
+      tertiaryCountryCode: selected?.code || current.tertiaryCountryCode,
     }));
   };
 
@@ -176,19 +194,25 @@ export default function NewLeadPage() {
 
     setIsSubmitting(true);
     setError(null);
+    setFieldErrors({});
+    setDuplicateReview(null);
     try {
       const displayName = [formData.firstName.trim(), formData.lastName.trim()].filter(Boolean).join(" ");
-      const response = await leadApi.create({
+      const payload = {
         salutation: formData.salutation || undefined,
         firstName: formData.firstName.trim() || undefined,
         lastName: formData.lastName.trim(),
         company: displayName,
         phone: formData.phone.trim(),
         secondaryPhone: formData.secondaryPhone.trim() || undefined,
+        tertiaryPhone: formData.tertiaryPhone.trim() || undefined,
         country: formData.country,
         countryCode: formData.countryCode,
+        secondaryCountryCode: formData.secondaryCountryCode,
+        tertiaryCountryCode: formData.tertiaryCountryCode,
         email: formData.email.trim() || undefined,
         secondaryEmail: formData.secondaryEmail.trim() || undefined,
+        tertiaryEmail: formData.tertiaryEmail.trim() || undefined,
         source: formData.source,
         projectId: formData.projectId,
         leadInterest: formData.leadInterest,
@@ -196,7 +220,34 @@ export default function NewLeadPage() {
         subCampaign: formData.subCampaign.trim(),
         salesUserId: formData.salesUserId || undefined,
         status: "NEW",
-      });
+      };
+      const duplicateResponse = await leadApi.checkDuplicates(payload);
+      const duplicateData = duplicateResponse.data as {
+        hasDuplicates?: boolean;
+        ambiguous?: boolean;
+        inaccessibleMatches?: boolean;
+        candidates?: Array<{ id: string; leadNumber: string | null; name: string; projectName: string | null; matchedFields: string[] }>;
+        fieldErrors?: Array<{ field: string; message: string }>;
+        error?: string;
+      };
+      if (duplicateData.hasDuplicates) {
+        const candidates = duplicateData.candidates || [];
+        if (
+          !duplicateData.ambiguous &&
+          !duplicateData.inaccessibleMatches &&
+          candidates.length === 1
+        ) {
+          await linkDuplicate(candidates[0].id);
+          return;
+        }
+        setDuplicateReview({
+          ambiguous: Boolean(duplicateData.ambiguous) || candidates.length > 1,
+          inaccessibleMatches: Boolean(duplicateData.inaccessibleMatches),
+          candidates,
+        });
+        return;
+      }
+      const response = await leadApi.create(payload);
       const responseData: { success: boolean; error?: string; action?: string } = response.data;
       if (!responseData.success) {
         throw new Error(responseData.error || "Failed to create lead.");
@@ -207,11 +258,57 @@ export default function NewLeadPage() {
       });
       router.push("/leads");
     } catch (reason: any) {
+      const apiFieldErrors = reason?.response?.data?.fieldErrors as Array<{ field: string; message: string }> | undefined;
+      if (apiFieldErrors?.length) {
+        setFieldErrors(Object.fromEntries(apiFieldErrors.map(({ field, message }) => [field, message])));
+      }
       const message =
         reason?.response?.data?.error ||
         reason?.response?.data?.message ||
         reason?.message ||
         "Failed to create lead.";
+      setError(message);
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const linkDuplicate = async (leadId: string) => {
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const displayName = [formData.firstName.trim(), formData.lastName.trim()].filter(Boolean).join(" ");
+      const response = await leadApi.create({
+        salutation: formData.salutation || undefined,
+        firstName: formData.firstName.trim() || undefined,
+        lastName: formData.lastName.trim(),
+        company: displayName,
+        phone: formData.phone.trim(),
+        secondaryPhone: formData.secondaryPhone.trim() || undefined,
+        tertiaryPhone: formData.tertiaryPhone.trim() || undefined,
+        country: formData.country,
+        countryCode: formData.countryCode,
+        secondaryCountryCode: formData.secondaryCountryCode,
+        tertiaryCountryCode: formData.tertiaryCountryCode,
+        email: formData.email.trim() || undefined,
+        secondaryEmail: formData.secondaryEmail.trim() || undefined,
+        tertiaryEmail: formData.tertiaryEmail.trim() || undefined,
+        source: formData.source,
+        projectId: formData.projectId,
+        leadInterest: formData.leadInterest,
+        campaign: formData.campaign.trim(),
+        subCampaign: formData.subCampaign.trim(),
+        salesUserId: formData.salesUserId || undefined,
+        status: "NEW",
+        linkToLeadId: leadId,
+      });
+      const responseData: { success: boolean; action?: string } = response.data;
+      if (!responseData.success) throw new Error("Unable to link this enquiry to the existing Lead.");
+      toast({ title: "Enquiry linked", description: "The enquiry was added to the existing Lead." });
+      router.push(`/leads/${leadId}`);
+    } catch (reason: any) {
+      const message = reason?.response?.data?.error || reason?.message || "Unable to link the enquiry.";
       setError(message);
       toast({ title: "Error", description: message, variant: "destructive" });
     } finally {
@@ -244,6 +341,39 @@ export default function NewLeadPage() {
                 {error}
               </div>
             )}
+            {duplicateReview && (
+              <div role="alert" className="space-y-3 rounded-md border border-amber-500/50 bg-amber-50 p-4 text-sm text-amber-950 dark:bg-amber-950/20 dark:text-amber-100">
+                <p className="font-medium">
+                  {duplicateReview.ambiguous
+                    ? "More than one Lead may match these contact details, or a stored phone is missing its country code. This enquiry cannot be linked automatically; ask an administrator to review it."
+                    : duplicateReview.inaccessibleMatches
+                      ? "A possible duplicate exists, but you do not have permission to view its Lead details. Contact an administrator before proceeding."
+                      : "A matching Lead was found. Link this enquiry to the existing record instead of creating a second Lead."}
+                </p>
+                {duplicateReview.candidates.map((candidate) => (
+                  <div key={candidate.id} className="flex flex-wrap items-center justify-between gap-3 rounded border bg-background p-3 text-foreground">
+                    <div>
+                      <p className="font-medium">{candidate.leadNumber || candidate.id} · {candidate.name}</p>
+                      {candidate.projectName && <p className="text-xs text-muted-foreground">Existing project: {candidate.projectName}</p>}
+                      <p className="text-xs text-muted-foreground">Matched: {candidate.matchedFields.join(", ")}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button type="button" variant="outline" asChild>
+                        <Link href={`/leads/${candidate.id}`}>Open Lead</Link>
+                      </Button>
+                      {!duplicateReview.ambiguous && !duplicateReview.inaccessibleMatches && (
+                        <Button type="button" disabled={isSubmitting} onClick={() => void linkDuplicate(candidate.id)}>
+                          Link enquiry
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <Button type="button" variant="ghost" onClick={() => setDuplicateReview(null)}>
+                  Cancel
+                </Button>
+              </div>
+            )}
             {isLoading ? (
               <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -274,29 +404,49 @@ export default function NewLeadPage() {
                   <Field id="last-name" label="Last Name" required>
                     <Input id="last-name" value={formData.lastName} onChange={(event) => updateField("lastName", event.target.value)} />
                   </Field>
-                  <Field id="primary-phone" label="Primary Phone" required>
-                    <Input id="primary-phone" type="tel" value={formData.phone} onChange={(event) => updateField("phone", event.target.value)} />
+                  <Field id="primary-phone" label="Primary Phone" required error={fieldErrors.phone}>
+                    <Input id="primary-phone" type="tel" aria-invalid={Boolean(fieldErrors.phone)} value={formData.phone} onChange={(event) => updateField("phone", event.target.value)} />
                   </Field>
-                  <Field id="secondary-phone" label="Secondary Phone">
-                    <Input id="secondary-phone" type="tel" value={formData.secondaryPhone} onChange={(event) => updateField("secondaryPhone", event.target.value)} />
+                  <Field id="secondary-phone" label="Secondary Phone" error={fieldErrors.secondaryPhone}>
+                    <Input id="secondary-phone" type="tel" aria-invalid={Boolean(fieldErrors.secondaryPhone)} value={formData.secondaryPhone} onChange={(event) => updateField("secondaryPhone", event.target.value)} />
+                  </Field>
+                  <Field id="tertiary-phone" label="Tertiary Phone" error={fieldErrors.tertiaryPhone}>
+                    <Input id="tertiary-phone" type="tel" aria-invalid={Boolean(fieldErrors.tertiaryPhone)} value={formData.tertiaryPhone} onChange={(event) => updateField("tertiaryPhone", event.target.value)} />
                   </Field>
                   <Field id="country" label="Country">
                     <select id="country" className={CONTROL_CLASS} value={formData.country} onChange={(event) => handleCountryChange(event.target.value)}>
                       {COUNTRY_OPTIONS.map((country) => <option key={country.name} value={country.name}>{country.name}</option>)}
                     </select>
                   </Field>
-                  <Field id="country-code" label="Primary Country Code">
-                    <select id="country-code" className={CONTROL_CLASS} value={formData.countryCode} onChange={(event) => updateField("countryCode", event.target.value)}>
+                  <Field id="country-code" label="Primary Country Code" error={fieldErrors.countryCode}>
+                    <select id="country-code" aria-invalid={Boolean(fieldErrors.countryCode)} className={CONTROL_CLASS} value={formData.countryCode} onChange={(event) => updateField("countryCode", event.target.value)}>
                       {[...new Set(COUNTRY_OPTIONS.map((country) => country.code))].map((code) => (
                         <option key={code} value={code}>+{code}</option>
                       ))}
                     </select>
                   </Field>
-                  <Field id="email" label="Email">
-                    <Input id="email" type="email" value={formData.email} onChange={(event) => updateField("email", event.target.value)} />
+                  <Field id="secondary-country-code" label="Secondary Country Code" error={fieldErrors.secondaryCountryCode}>
+                    <select id="secondary-country-code" aria-invalid={Boolean(fieldErrors.secondaryCountryCode)} className={CONTROL_CLASS} value={formData.secondaryCountryCode} onChange={(event) => updateField("secondaryCountryCode", event.target.value)}>
+                      {[...new Set(COUNTRY_OPTIONS.map((country) => country.code))].map((code) => (
+                        <option key={code} value={code}>+{code}</option>
+                      ))}
+                    </select>
                   </Field>
-                  <Field id="secondary-email" label="Secondary Email">
-                    <Input id="secondary-email" type="email" value={formData.secondaryEmail} onChange={(event) => updateField("secondaryEmail", event.target.value)} />
+                  <Field id="tertiary-country-code" label="Tertiary Country Code" error={fieldErrors.tertiaryCountryCode}>
+                    <select id="tertiary-country-code" aria-invalid={Boolean(fieldErrors.tertiaryCountryCode)} className={CONTROL_CLASS} value={formData.tertiaryCountryCode} onChange={(event) => updateField("tertiaryCountryCode", event.target.value)}>
+                      {[...new Set(COUNTRY_OPTIONS.map((country) => country.code))].map((code) => (
+                        <option key={code} value={code}>+{code}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field id="email" label="Email" error={fieldErrors.email}>
+                    <Input id="email" type="email" aria-invalid={Boolean(fieldErrors.email)} value={formData.email} onChange={(event) => updateField("email", event.target.value)} />
+                  </Field>
+                  <Field id="secondary-email" label="Secondary Email" error={fieldErrors.secondaryEmail}>
+                    <Input id="secondary-email" type="email" aria-invalid={Boolean(fieldErrors.secondaryEmail)} value={formData.secondaryEmail} onChange={(event) => updateField("secondaryEmail", event.target.value)} />
+                  </Field>
+                  <Field id="tertiary-email" label="Tertiary Email" error={fieldErrors.tertiaryEmail}>
+                    <Input id="tertiary-email" type="email" aria-invalid={Boolean(fieldErrors.tertiaryEmail)} value={formData.tertiaryEmail} onChange={(event) => updateField("tertiaryEmail", event.target.value)} />
                   </Field>
                   <Field id="lead-source" label="Lead Source" required>
                     <select id="lead-source" className={CONTROL_CLASS} value={formData.source} onChange={(event) => updateField("source", event.target.value)}>

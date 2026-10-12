@@ -44,6 +44,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { profileApi, profilePermissionApi, permissionApi } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import {
   Plus,
@@ -79,7 +80,10 @@ interface Profile {
   isGlobal?: boolean;
   usersCount?: number;
   status: "active" | "inactive";
-  leadStatusAccess?: string[];
+  leadStatusAccess?: string[] | {
+    statuses?: string[];
+    recordAccess?: Record<string, "OWN" | "TEAM" | "ALL">;
+  };
 }
 
 interface ProfileFormData {
@@ -101,7 +105,13 @@ const statusColors: Record<string, string> = {
   inactive: "bg-gray-100 text-gray-800",
 };
 
+function getLeadStatusAccess(value: Profile["leadStatusAccess"]): string[] {
+  if (Array.isArray(value)) return value;
+  return value?.statuses || [];
+}
+
 function ProfilesPageContent() {
+  const { refresh: refreshAuth } = useAuth();
   const { toast } = useToast();
   const searchParams = useSearchParams();
 
@@ -186,7 +196,7 @@ function ProfilesPageContent() {
     setFormData({
       name: profile.name || "",
       description: profile.description || "",
-      leadStatusAccess: profile.leadStatusAccess || [],
+      leadStatusAccess: getLeadStatusAccess(profile.leadStatusAccess),
       status: profile.status || "active",
     });
     setDialogOpen(true);
@@ -208,11 +218,15 @@ function ProfilesPageContent() {
     }
     try {
       setSaving(true);
+      const payload = {
+        ...formData,
+        leadStatusAccess: { statuses: formData.leadStatusAccess },
+      };
       if (dialogMode === "create") {
-        await profileApi.create(formData);
+        await profileApi.create(payload);
         toast({ title: "Success", description: "Profile created successfully" });
       } else if (selectedProfile) {
-        await profileApi.update(selectedProfile.id, formData);
+        await profileApi.update(selectedProfile.id, payload);
         toast({ title: "Success", description: "Profile updated successfully" });
       }
       setDialogOpen(false);
@@ -266,11 +280,13 @@ function ProfilesPageContent() {
       if (isAssigned) {
         await profilePermissionApi.removePermission(permTarget.id, permissionId);
         setProfilePerms((prev) => prev.filter((p) => p.id !== permissionId));
+        await refreshAuth();
         toast({ title: "Success", description: "Permission removed from profile" });
       } else {
         await profilePermissionApi.addPermissions(permTarget.id, [permissionId]);
         const perm = allPermissions.find((p) => p.id === permissionId);
         if (perm) setProfilePerms((prev) => [...prev, perm]);
+        await refreshAuth();
         toast({ title: "Success", description: "Permission added to profile" });
       }
     } catch (err: any) {
@@ -516,8 +532,8 @@ function ProfilesPageContent() {
                 <div>
                   <Label className="text-muted-foreground">Lead Status Access</Label>
                   <div className="flex flex-wrap gap-1 mt-1">
-                    {viewTarget.leadStatusAccess && viewTarget.leadStatusAccess.length > 0 ? (
-                      viewTarget.leadStatusAccess.map((status) => (
+                    {getLeadStatusAccess(viewTarget.leadStatusAccess).length > 0 ? (
+                      getLeadStatusAccess(viewTarget.leadStatusAccess).map((status) => (
                         <Badge key={status} variant="outline" className="text-xs">
                           {getStatusLabel(status)}
                         </Badge>

@@ -3,8 +3,17 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { prisma } from '@dct-crm/db';
-import { normalizePhone } from '@dct-crm/shared';
 import { AuthRequest } from '../middleware/auth';
+import { createEnquiryInTransaction, createEnquiryInTransactionWithStatus } from '../services/enquiryService';
+import {
+  acquireLeadDuplicateLocks,
+  findLeadDuplicates,
+  normalizeLeadEmail,
+  normalizeLeadPhone,
+  validateLeadContactInput,
+} from '../services/leadDuplicateDetection';
+import { mergeOperationalLeadCustomFields, tagLeadEnquiryAttribution } from '../services/leadEventTagging';
+import { assignLeadToProjectRoundRobinInTransaction } from '../services/rrQueue';
 
 const router = Router();
 const COOKIE_NAME = 'cp_token';
@@ -178,11 +187,38 @@ router.get('/me', requireCP, async (req: CPRequest, res: Response) => {
 
 const leadInputSchema = z.object({
   fullName: z.string().trim().min(1).max(200),
-  email: z.string().trim().email().optional().or(z.literal('')),
-  secondaryEmail: z.string().trim().email().optional().or(z.literal('')),
-  phone: z.string().trim().min(3).max(40),
-  secondaryPhone: z.string().trim().max(40).optional().or(z.literal('')),
+  email: z.string().trim().max(254).email().optional().or(z.literal('')),
+  secondaryEmail: z.string().trim().max(254).email().optional().or(z.literal('')),
+  tertiaryEmail: z.string().trim().max(254).email().optional().or(z.literal('')),
+  originalSubmissionId: z.string().trim().min(1).max(200).optional(),
+  phone: z.string().trim().min(3).max(40).regex(/^[0-9+().\s-]+$/),
+  secondaryPhone: z.string().trim().max(40).regex(/^[0-9+().\s-]+$/).optional().or(z.literal('')),
+  tertiaryPhone: z.string().trim().max(40).regex(/^[0-9+().\s-]+$/).optional().or(z.literal('')),
   projectId: z.string().min(1),
+  leadStatus: z.enum([
+    'NEW',
+    'INCOMING',
+    'PROSPECT',
+    'SITE_VISIT_SCHEDULED',
+    'SITE_VISIT_HAPPENED',
+    'BOOKED',
+    'LOST',
+  ]).optional(),
+  leadSource: z.enum([
+    'WEBSITE',
+    'REFERRAL',
+    'COLD_CALL',
+    'ADVERTISEMENT',
+    'WALK_IN',
+    'PORTAL',
+    'FACEBOOK',
+    'CHANNEL_PARTNER',
+    'INSTAGRAM',
+    'TWITTER',
+    'WHATSAPP',
+    'YOUTUBE',
+    'OTHER',
+  ]).default('CHANNEL_PARTNER'),
   budget: z.string().trim().min(1).transform(Number).pipe(z.number().finite().min(0)),
   sqftRange: z.string().max(100).optional(),
   bhkSize: z.string().max(50).optional(),
@@ -263,6 +299,7 @@ router.get('/leads', requireCP, async (req: CPRequest, res: Response) => {
 router.post('/leads', requireCP, async (req: CPRequest, res: Response) => {
   try {
     const input = leadInputSchema.parse(req.body);
+    const originalSubmissionId = input.originalSubmissionId || req.get('Idempotency-Key') || undefined;
     const project = await prisma.project.findFirst({
       where: { id: input.projectId, tenantId: req.cp!.tenantId, isActive: true },
       select: { id: true },
@@ -278,28 +315,236 @@ router.post('/leads', requireCP, async (req: CPRequest, res: Response) => {
       return res.status(503).json({ success: false, error: 'No active CRM administrator is available to record this lead' });
     }
 
-    const phone = normalizePhone(input.phone);
-    const [phoneCandidates, duplicateByEmail] = await Promise.all([
-      prisma.lead.findMany({
-        where: { tenantId: req.cp!.tenantId, phone: { not: null } },
-        select: { id: true, phone: true },
-      }),
-      input.email
-        ? prisma.lead.findFirst({
-            where: { tenantId: req.cp!.tenantId, email: { equals: input.email, mode: 'insensitive' } },
-            select: { id: true },
-          })
-        : Promise.resolve(null),
-    ]);
-    if (
-      duplicateByEmail ||
-      phoneCandidates.some((candidate) => candidate.phone && normalizePhone(candidate.phone) === phone)
-    ) {
-      return res.status(409).json({ success: false, duplicate: true, message: 'Lead Exists on the System Already' });
+    const phone = normalizeLeadPhone(input.phone, '91')?.e164;
+    const secondaryPhone = input.secondaryPhone
+      ? normalizeLeadPhone(input.secondaryPhone, '91')?.e164
+      : null;
+    const tertiaryPhone = input.tertiaryPhone
+      ? normalizeLeadPhone(input.tertiaryPhone, '91')?.e164
+      : null;
+    const contactInput = {
+      phones: [
+        { field: 'phone', value: input.phone, countryCode: '91' },
+        { field: 'secondaryPhone', value: input.secondaryPhone, countryCode: '91' },
+        { field: 'tertiaryPhone', value: input.tertiaryPhone, countryCode: '91' },
+      ],
+      emails: [
+        { field: 'email', value: input.email },
+        { field: 'secondaryEmail', value: input.secondaryEmail },
+        { field: 'tertiaryEmail', value: input.tertiaryEmail },
+      ],
+    };
+    const validationErrors = validateLeadContactInput(contactInput);
+    if (validationErrors.length || !phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please enter valid contact details',
+        fieldErrors: validationErrors.length ? validationErrors : [{ field: 'phone', message: 'Enter a valid phone number.' }],
+      });
     }
 
     const nameParts = input.fullName.trim().split(/\s+/);
-    const lead = await prisma.$transaction(async (tx) => {
+    const outcome = await prisma.$transaction(async (tx) => {
+      if (originalSubmissionId) {
+        const key = `CP_PORTAL:${originalSubmissionId}`;
+        await tx.$executeRaw`
+          SELECT pg_advisory_xact_lock(hashtextextended(${`LEAD_SUBMISSION:${req.cp!.tenantId}:${key}`}, 0))
+        `;
+        const priorEnquiry = await tx.enquiry.findFirst({
+          where: { tenantId: req.cp!.tenantId, originalSubmissionId: key },
+          select: { id: true, leadId: true },
+        });
+        if (priorEnquiry) return { action: 'DUPLICATE_LINKED' as const };
+      }
+      await acquireLeadDuplicateLocks(tx, req.cp!.tenantId, contactInput);
+      const duplicates = await findLeadDuplicates(tx, req.cp!.tenantId, contactInput);
+      if (duplicates.length > 1 || duplicates.some((match) => match.ambiguous)) {
+        await tx.auditLog.create({
+          data: {
+            tenantId: req.cp!.tenantId,
+            userId: leadCreator.id,
+            action: 'DUPLICATE_MATCH_AMBIGUOUS',
+            objectType: 'LeadDuplicate',
+            newValues: {
+              leadIds: duplicates.map((match) => match.lead.id),
+              matchingFields: duplicates.map((match) => ({ leadId: match.lead.id, fields: match.matchedFields })),
+              source: 'CHANNEL_PARTNER',
+              projectId: project.id,
+              action: 'REVIEW_REQUIRED',
+            },
+          },
+        });
+        return { action: 'AMBIGUOUS' as const };
+      }
+      if (duplicates.length === 1) {
+        const existing = duplicates[0];
+        const enquiryResult = await createEnquiryInTransactionWithStatus(tx, {
+          tenantId: req.cp!.tenantId,
+          leadId: existing.lead.id,
+          leadType: 'ADDITIONAL',
+          enquiryType: 'ADDITIONAL',
+          source: input.leadSource,
+          subSource: 'CP Portal',
+          projectId: project.id,
+          phone: input.phone,
+          secondaryPhone: input.secondaryPhone,
+          tertiaryPhone: input.tertiaryPhone,
+          countryCode: '+91',
+          secondaryCountryCode: '+91',
+          tertiaryCountryCode: '+91',
+          email: normalizeLeadEmail(input.email),
+          secondaryEmail: normalizeLeadEmail(input.secondaryEmail),
+          tertiaryEmail: normalizeLeadEmail(input.tertiaryEmail),
+          originalSubmissionId: originalSubmissionId ? `CP_PORTAL:${originalSubmissionId}` : undefined,
+          description: input.remarks,
+          channelPartner: req.cp!.name,
+          details: {
+            cpPortalAccountId: req.cp!.id,
+            budget: input.budget,
+            sqftRange: input.sqftRange || null,
+            bhkSize: input.bhkSize || null,
+            propertyType: input.propertyType || null,
+            stage: input.stage,
+          },
+          userId: leadCreator.id,
+        });
+        if (enquiryResult.created) {
+          const currentLead = await tx.lead.findUniqueOrThrow({
+            where: { id: existing.lead.id },
+            select: {
+              phone: true,
+              mobile: true,
+              secondaryPhone: true,
+              tertiaryPhone: true,
+              countryCode: true,
+              secondaryCountryCode: true,
+              tertiaryCountryCode: true,
+            },
+          });
+          const phoneSlots = [
+            { field: 'phone', value: currentLead.phone, countryCode: currentLead.countryCode },
+            { field: 'mobile', value: currentLead.mobile, countryCode: currentLead.countryCode },
+            { field: 'secondaryPhone', value: currentLead.secondaryPhone, countryCode: currentLead.secondaryCountryCode },
+            { field: 'tertiaryPhone', value: currentLead.tertiaryPhone, countryCode: currentLead.tertiaryCountryCode },
+          ];
+          const incomingPhones = [
+            { value: input.phone, countryCode: '+91' },
+            { value: input.secondaryPhone, countryCode: '+91' },
+            { value: input.tertiaryPhone, countryCode: '+91' },
+          ];
+          const contactOldValues: Record<string, null> = {};
+          const contactNewValues: Record<string, string> = {};
+          const leadContactUpdates: {
+            phone?: string;
+            mobile?: string;
+            secondaryPhone?: string;
+            tertiaryPhone?: string;
+            countryCode?: string;
+            secondaryCountryCode?: string;
+            tertiaryCountryCode?: string;
+          } = {};
+          for (const incoming of incomingPhones) {
+            const normalized = normalizeLeadPhone(incoming.value, incoming.countryCode);
+            if (!normalized) continue;
+            const alreadyStored = phoneSlots.some((slot) =>
+              normalizeLeadPhone(slot.value, slot.countryCode)?.e164 === normalized.e164,
+            );
+            if (alreadyStored) continue;
+            const slot = phoneSlots.find((candidate) => !candidate.value);
+            if (!slot) continue;
+            contactOldValues[slot.field] = null;
+            contactNewValues[slot.field] = normalized.e164;
+            if (slot.field === 'phone') {
+              leadContactUpdates.phone = normalized.e164;
+              leadContactUpdates.countryCode = '+91';
+            } else if (slot.field === 'mobile') {
+              leadContactUpdates.mobile = normalized.e164;
+              const secondarySlot = phoneSlots.find((candidate) => candidate.field === 'secondaryPhone');
+              if (!secondarySlot?.value) {
+                leadContactUpdates.secondaryPhone = normalized.e164;
+                leadContactUpdates.secondaryCountryCode = '+91';
+                if (secondarySlot) {
+                  secondarySlot.value = normalized.e164;
+                  secondarySlot.countryCode = '+91';
+                }
+              }
+            } else if (slot.field === 'secondaryPhone') {
+              leadContactUpdates.secondaryPhone = normalized.e164;
+              leadContactUpdates.secondaryCountryCode = '+91';
+              const mobileSlot = phoneSlots.find((candidate) => candidate.field === 'mobile');
+              if (!mobileSlot?.value) {
+                leadContactUpdates.mobile = normalized.e164;
+                if (mobileSlot) {
+                  mobileSlot.value = normalized.e164;
+                  mobileSlot.countryCode = '+91';
+                }
+              }
+            } else {
+              leadContactUpdates.tertiaryPhone = normalized.e164;
+              leadContactUpdates.tertiaryCountryCode = '+91';
+            }
+            slot.value = normalized.e164;
+            slot.countryCode = '+91';
+          }
+          if (Object.keys(leadContactUpdates).length) {
+            await tx.lead.update({
+              where: { id: existing.lead.id },
+              data: leadContactUpdates,
+            });
+            await tx.auditLog.create({
+              data: {
+                tenantId: req.cp!.tenantId,
+                userId: leadCreator.id,
+                leadId: existing.lead.id,
+                action: 'LEAD_CONTACT_DETAILS_SYNCHRONIZED',
+                objectType: 'Lead',
+                objectId: existing.lead.id,
+                oldValues: contactOldValues,
+                newValues: contactNewValues,
+              },
+            });
+          }
+          await tx.lead.update({
+            where: { id: existing.lead.id },
+            data: {
+              lastSource: input.leadSource,
+              lastSubSource: 'CP Portal',
+              lastEnquiryAt: new Date(),
+              enquiryCount: { increment: 1 },
+            },
+          });
+        }
+        const enquiry = enquiryResult.enquiry;
+        await tx.cPPortalNote.create({
+          data: {
+            tenantId: req.cp!.tenantId,
+            leadId: existing.lead.id,
+            cpPortalAccountId: req.cp!.id,
+            category: 'Additional Enquiry',
+            text: input.remarks?.trim() || `Additional enquiry submitted for project ${project.id}`,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId: req.cp!.tenantId,
+            userId: leadCreator.id,
+            leadId: existing.lead.id,
+            action: 'DUPLICATE_ENQUIRY_LINKED',
+            objectType: 'Enquiry',
+            objectId: enquiry.id,
+            newValues: {
+              leadId: existing.lead.id,
+              enquiryId: enquiry.id,
+              matchingFields: existing.matchedFields,
+              source: 'CHANNEL_PARTNER',
+              projectId: project.id,
+              action: 'RELATED_SOURCE_LINKED',
+            },
+          },
+        });
+        return { action: 'DUPLICATE_LINKED' as const };
+      }
+
       const sequence = await tx.sequence.upsert({
         where: { tenantId_type: { tenantId: req.cp!.tenantId, type: 'LEAD' } },
         update: { nextValue: { increment: 1 } },
@@ -314,22 +559,89 @@ router.post('/leads', requireCP, async (req: CPRequest, res: Response) => {
           firstName: nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : undefined,
           lastName: nameParts[nameParts.length - 1],
           company: req.cp!.name || 'Channel Partner',
-          source: 'CHANNEL_PARTNER',
+          source: input.leadSource,
+          lastSource: input.leadSource,
+          lastSubSource: 'CP Portal',
+          lastEnquiryAt: new Date(),
+          enquiryCount: 1,
           secondarySource: 'CP Portal',
           tertiarySource: req.cp!.name,
-          status: input.stage === 'lost' ? 'LOST' : 'NEW',
-          rating: input.stage === 'lost' ? undefined : input.stage.toUpperCase() as 'COLD' | 'WARM' | 'HOT',
+          status: input.leadStatus || (input.stage === 'lost' ? 'LOST' : 'NEW'),
+          rating: input.stage === 'lost' || input.leadStatus === 'LOST'
+            ? undefined
+            : input.stage.toUpperCase() as 'COLD' | 'WARM' | 'HOT',
           phone,
-          email: input.email || undefined,
-          secondaryEmail: input.secondaryEmail || undefined,
-          secondaryPhone: input.secondaryPhone || undefined,
+          mobile: secondaryPhone || undefined,
+          countryCode: '+91',
+          tertiaryPhone: tertiaryPhone || undefined,
+          tertiaryCountryCode: tertiaryPhone ? '+91' : undefined,
+          email: normalizeLeadEmail(input.email) || undefined,
+          secondaryEmail: normalizeLeadEmail(input.secondaryEmail) || undefined,
+          tertiaryEmail: normalizeLeadEmail(input.tertiaryEmail) || undefined,
+          secondaryPhone: secondaryPhone || undefined,
+          secondaryCountryCode: secondaryPhone ? '+91' : undefined,
           projectId: project.id,
           budget: input.budget,
           sqftRange: input.sqftRange || undefined,
           bhkSize: input.bhkSize || undefined,
           propertyType: input.propertyType || undefined,
           description: input.remarks || undefined,
+          customFields: mergeOperationalLeadCustomFields({}, {
+            source: input.leadSource,
+            status: input.leadStatus || (input.stage === 'lost' ? 'LOST' : 'NEW'),
+            rating: input.stage === 'lost' || input.leadStatus === 'LOST'
+              ? null
+              : input.stage.toUpperCase(),
+            description: input.remarks || null,
+            score: 0,
+          }),
         },
+      });
+      await tagLeadEnquiryAttribution(tx, {
+        tenantId: req.cp!.tenantId,
+        leadId: created.id,
+        source: input.leadSource,
+        subSource: 'CP Portal',
+        projectId: project.id,
+        countryCode: '+91',
+        country: 'India',
+        secondaryPhone: secondaryPhone || undefined,
+        secondaryCountryCode: secondaryPhone ? '+91' : undefined,
+        tertiaryPhone: tertiaryPhone || undefined,
+        occurredAt: new Date(),
+        lifecycleType: 'Fresh',
+        isLeadCreation: true,
+      });
+      await createEnquiryInTransaction(tx, {
+        tenantId: req.cp!.tenantId,
+        leadId: created.id,
+        leadType: 'ORIGINAL',
+        enquiryType: 'ORIGINAL',
+        source: input.leadSource,
+        subSource: 'CP Portal',
+        projectId: project.id,
+        phone: input.phone,
+        secondaryPhone: input.secondaryPhone,
+        tertiaryPhone: input.tertiaryPhone,
+        countryCode: '+91',
+        secondaryCountryCode: secondaryPhone ? '+91' : undefined,
+        tertiaryCountryCode: tertiaryPhone ? '+91' : undefined,
+        email: normalizeLeadEmail(input.email),
+        secondaryEmail: normalizeLeadEmail(input.secondaryEmail),
+        tertiaryEmail: normalizeLeadEmail(input.tertiaryEmail),
+        originalSubmissionId: originalSubmissionId ? `CP_PORTAL:${originalSubmissionId}` : undefined,
+        description: input.remarks,
+        channelPartner: req.cp!.name,
+        details: {
+          cpPortalAccountId: req.cp!.id,
+          budget: input.budget,
+          sqftRange: input.sqftRange || null,
+          bhkSize: input.bhkSize || null,
+          propertyType: input.propertyType || null,
+          leadStatus: input.leadStatus || (input.stage === 'lost' ? 'LOST' : 'NEW'),
+          leadRating: input.stage || 'cold',
+        },
+        userId: leadCreator.id,
       });
       const noteText = input.remarks?.trim() || 'Enquiry created successfully';
       await tx.cPPortalNote.create({
@@ -341,9 +653,69 @@ router.post('/leads', requireCP, async (req: CPRequest, res: Response) => {
           text: noteText,
         },
       });
-      return created;
+      let assignment: { assignedUserId: string; queueId: string; memberId: string } | null = null;
+      let assignmentWarning: string | undefined;
+      try {
+        assignment = await assignLeadToProjectRoundRobinInTransaction(tx, {
+          tenantId: req.cp!.tenantId,
+          leadId: created.id,
+          projectId: created.projectId,
+          userType: 'Pre Sales',
+          actorId: leadCreator.id,
+          reason: 'New channel partner lead assigned to project/source-matched Pre Sales round robin',
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '';
+        if (
+          reason !== 'RR_QUEUE_NOT_ACTIVE' &&
+          !reason.startsWith('RR_QUEUE_NOT_CONFIGURED:') &&
+          !reason.startsWith('NO_ELIGIBLE_RR_MEMBER:')
+        ) {
+          throw error;
+        }
+        assignmentWarning = 'Lead saved, but no eligible Pre Sales round-robin member was found for this project and lead source.';
+        await tx.auditLog.create({
+          data: {
+            tenantId: req.cp!.tenantId,
+            userId: leadCreator.id,
+            leadId: created.id,
+            action: 'RR_LEAD_ASSIGNMENT_SKIPPED',
+            objectType: 'Lead',
+            objectId: created.id,
+            newValues: {
+              projectId: created.projectId,
+              source: created.source,
+              userType: 'Pre Sales',
+              reason,
+            },
+          },
+        });
+      }
+      return { action: 'NEW_LEAD' as const, lead: created, assignment, assignmentWarning };
     });
-    res.status(201).json({ success: true, data: lead, message: 'Lead Registered Successfully' });
+    if (outcome.action === 'AMBIGUOUS') {
+      return res.status(409).json({
+        success: false,
+        duplicate: true,
+        ambiguous: true,
+        message: 'This enquiry may match multiple CRM records and requires review.',
+      });
+    }
+    if (outcome.action === 'DUPLICATE_LINKED') {
+      return res.status(200).json({
+        success: true,
+        duplicate: true,
+        linked: true,
+        message: 'Enquiry linked to the existing CRM record.',
+      });
+    }
+    res.status(201).json({
+      success: true,
+      data: outcome.lead,
+      assignment: outcome.assignment,
+      assignmentWarning: outcome.assignmentWarning,
+      message: outcome.assignmentWarning || 'Lead registered and assigned to the appropriate Pre Sales round robin.',
+    });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ success: false, error: error.errors[0].message });

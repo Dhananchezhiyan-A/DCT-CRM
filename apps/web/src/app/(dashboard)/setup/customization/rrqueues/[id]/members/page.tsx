@@ -56,7 +56,7 @@ export default function RRQueueMembersPage({ params }: { params: { id: string } 
 
     <div className="overflow-x-auto rounded-md border bg-card">
       <table className="w-full text-sm">
-        <thead className="bg-muted/70"><tr className="border-b text-left text-muted-foreground"><th className="w-12 px-4 py-2.5 font-medium">#</th><th className="px-4 py-2.5 font-medium">Name</th><th className="px-4 py-2.5 font-medium">User</th><th className="px-4 py-2.5 font-medium">User Type</th><th className="px-4 py-2.5 font-medium">Active Member</th><th className="px-4 py-2.5 font-medium">Available</th><th className="px-4 py-2.5 font-medium">Working</th><th className="px-4 py-2.5 font-medium">Last Assigned</th></tr></thead>
+        <thead className="bg-muted/70"><tr className="border-b text-left text-muted-foreground"><th className="w-12 px-4 py-2.5 font-medium">#</th><th className="px-4 py-2.5 font-medium">Name</th><th className="px-4 py-2.5 font-medium">User</th><th className="px-4 py-2.5 font-medium">User Type</th><th className="px-4 py-2.5 font-medium">Active Member</th><th className="px-4 py-2.5 font-medium">Available</th><th className="px-4 py-2.5 font-medium">Working</th><th className="px-4 py-2.5 font-medium">Week Off</th><th className="px-4 py-2.5 font-medium">Max Lead Capacity</th><th className="px-4 py-2.5 font-medium">Last Assigned</th></tr></thead>
         <tbody>
           {members.map((member, index) => <tr className="border-b last:border-0 hover:bg-muted/30" key={member.id}>
             <td className="px-4 py-2.5 text-muted-foreground">{(page - 1) * PAGE_SIZE + index + 1}</td>
@@ -66,10 +66,12 @@ export default function RRQueueMembersPage({ params }: { params: { id: string } 
             <td className="px-4 py-2.5">{member.activeMember ? <Check aria-label="Active member" className="h-5 w-5 text-muted-foreground" strokeWidth={2.5} /> : <X aria-label="Inactive member" className="h-5 w-5 text-muted-foreground" />}</td>
             <td className="px-4 py-2.5">{member.isAvailable ? <Check aria-label="Available" className="h-5 w-5 text-muted-foreground" strokeWidth={2.5} /> : <X aria-label="Unavailable" className="h-5 w-5 text-muted-foreground" />}</td>
             <td className="px-4 py-2.5">{member.isWorking ? <Check aria-label="Working" className="h-5 w-5 text-muted-foreground" strokeWidth={2.5} /> : <X aria-label="Not working" className="h-5 w-5 text-muted-foreground" />}</td>
+            <td className="px-4 py-2.5">{member.weekOff ? "Yes" : "No"}</td>
+            <td className="px-4 py-2.5">{Number(member.maxLeadCapacity ?? -1) < 0 ? "Unlimited" : member.maxLeadCapacity}</td>
             <td className="px-4 py-2.5">{member.lastAssignedAt ? new Date(member.lastAssignedAt).toLocaleString() : "-"}</td>
           </tr>)}
-          {!loading && !members.length && <tr><td className="px-4 py-10 text-center text-muted-foreground" colSpan={8}>No RRMembers found.</td></tr>}
-          {loading && !members.length && <tr><td className="px-4 py-10 text-center text-muted-foreground" colSpan={8}>Loading RRMembers...</td></tr>}
+          {!loading && !members.length && <tr><td className="px-4 py-10 text-center text-muted-foreground" colSpan={10}>No RRMembers found.</td></tr>}
+          {loading && !members.length && <tr><td className="px-4 py-10 text-center text-muted-foreground" colSpan={10}>Loading RRMembers...</td></tr>}
         </tbody>
       </table>
     </div>

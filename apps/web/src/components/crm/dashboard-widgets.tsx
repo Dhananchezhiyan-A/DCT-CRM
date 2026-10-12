@@ -45,13 +45,42 @@ export function KPICard({
     );
   }
 
+  const visualStyles: Record<string, { card: string; icon: string; glow: string }> = {
+    "Total Leads": {
+      card: "border-sky-200 bg-gradient-to-br from-white via-white to-sky-50",
+      icon: "bg-gradient-to-br from-sky-400 to-blue-700 text-white",
+      glow: "bg-sky-100/70",
+    },
+    Opportunities: {
+      card: "border-teal-200 bg-gradient-to-br from-white via-white to-teal-50",
+      icon: "bg-gradient-to-br from-cyan-400 to-teal-600 text-white",
+      glow: "bg-teal-100/70",
+    },
+    "Pipeline Value": {
+      card: "border-violet-200 bg-gradient-to-br from-white via-white to-violet-50",
+      icon: "bg-gradient-to-br from-violet-400 to-purple-700 text-white",
+      glow: "bg-violet-100/70",
+    },
+    "Active Tasks": {
+      card: "border-blue-200 bg-gradient-to-br from-white via-white to-blue-50",
+      icon: "bg-gradient-to-br from-blue-400 to-indigo-700 text-white",
+      glow: "bg-blue-100/70",
+    },
+  };
+  const visualStyle = visualStyles[title] || {
+    card: "border-sky-100 bg-white",
+    icon: "bg-primary text-primary-foreground",
+    glow: "bg-sky-100/50",
+  };
+
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="flex items-center justify-between">
+    <Card className={cn("relative isolate min-h-[136px] overflow-hidden rounded-xl shadow-sm", visualStyle.card)}>
+      <div aria-hidden="true" className={cn("pointer-events-none absolute -bottom-9 right-5 h-24 w-24 rounded-full", visualStyle.glow)} />
+      <CardContent className="relative z-10 flex min-h-[136px] items-center justify-between p-4 sm:p-5">
+        <div>
           <div>
-            <p className="text-sm text-muted-foreground">{title}</p>
-            <p className="text-xl font-bold">{value}</p>
+            <p className="text-[13px] font-medium text-slate-700">{title}</p>
+            <p className="mt-2 text-3xl font-bold leading-none tracking-tight text-slate-900">{value}</p>
             {change !== undefined && (
               <div className="flex items-center gap-1 mt-1">
                 {change >= 0 ? (
@@ -74,9 +103,9 @@ export function KPICard({
               </div>
             )}
           </div>
-          <div className="p-3 bg-primary/10 rounded-lg">
-            <Icon className="h-6 w-6 text-primary" />
-          </div>
+        </div>
+        <div className={cn("relative z-10 flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-md ring-1 ring-white/40", visualStyle.icon)}>
+          <Icon className="h-5 w-5" />
         </div>
       </CardContent>
     </Card>
@@ -219,9 +248,12 @@ export function PipelineSummary({ stages, isLoading }: PipelineSummaryProps) {
   }
 
   return (
-    <Card>
+    <Card className="rounded-xl border-sky-100 shadow-sm">
       <CardHeader>
-        <CardTitle className="text-lg">Pipeline Summary</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <TrendingUp className="h-4 w-4 text-blue-500" />
+          Pipeline Summary
+        </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {stages.map((stage) => (
@@ -232,9 +264,9 @@ export function PipelineSummary({ stages, isLoading }: PipelineSummaryProps) {
                 {stage.count} • ₹{stage.value.toLocaleString()}
               </span>
             </div>
-            <div className="h-2 bg-muted rounded-full overflow-hidden">
+            <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
               <div
-                className="h-full bg-primary"
+                className="h-full rounded-full bg-gradient-to-r from-blue-700 via-blue-500 to-cyan-400"
                 style={{
                   width: `${totalValue > 0 ? (stage.value / totalValue) * 100 : 0}%`,
                 }}

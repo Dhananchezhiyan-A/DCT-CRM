@@ -82,11 +82,15 @@ model Tenant {
   approvals                Approval[]
   bookings                 Booking[]
   payments                 Payment[]
+  quotationInstallments    QuotationInstallment[]
+  paymentAllocations       PaymentAllocation[]
+  receipts                 Receipt[]
   projects                 Project[]
   units                    Unit[]
   tasks                    Task[]
   followUps                FollowUp[]
   activities               Activity[]
+  callDetails              CallDetail[]
   aiConversations          AIConversation[]
   objectDefinitions        ObjectDefinition[]
   customRecords            CustomRecord[]
@@ -151,11 +155,19 @@ model User {
   cancelledSiteVisits      SiteVisit[]                @relation("SvCancelledBy")
   assignedBookings         Booking[]                  @relation("BookingOwner")
   createdBookings          Booking[]                  @relation("BookingCreator")
+  verifiedPayments         Payment[]                  @relation("PaymentVerifier")
+  rejectedPayments         Payment[]                  @relation("PaymentRejector")
+  createdPaymentAllocations PaymentAllocation[]       @relation("PaymentAllocationCreator")
+  issuedReceipts           Receipt[]                  @relation("ReceiptIssuer")
+  cancelledReceipts        Receipt[]                  @relation("ReceiptCanceller")
   tasks                    Task[]                     @relation("TaskOwner")
   createdTasks             Task[]                     @relation("TaskCreator")
   modifiedTasks            Task[]                     @relation("TaskLastModifiedBy")
   followUps                FollowUp[]
   activities               Activity[]
+  createdCallDetails       CallDetail[]                 @relation("CallDetailCreator")
+  modifiedCallDetails      CallDetail[]                 @relation("CallDetailModifier")
+  ownedCallDetails         CallDetail[]                 @relation("CallDetailOwner")
   assignedActivities       Activity[]                 @relation("ActivityAssignee")
   aiConversations          AIConversation[]
   notifications            Notification[]
@@ -608,6 +620,7 @@ enum LeadStatus {
 
 enum LeadSource {
   WEBSITE
+  FACEBOOK
   REFERRAL
   COLD_CALL
   ADVERTISEMENT
@@ -663,9 +676,12 @@ model Lead {
   creator           User             @relation("LeadCreator", fields: [creatorId], references: [id])
   leadNumber        String?
   firstSubSource String?
+  firstCampaign String?
   lastSource String?
   lastSubSource String?
   lastCampaign String?
+  lastEnquiryAt DateTime?
+  enquiryCount Int @default(0)
   leadType String?
   lastReEngagedAt DateTime?
   lostAt DateTime?
@@ -685,6 +701,7 @@ model Lead {
   title      String?
   email      String?
   phone      String?
+  countryCode String?
   mobile     String?
   tertiaryPhone String?
   alternateEmail String?
@@ -725,7 +742,10 @@ model Lead {
   companyComments   String?
 
   secondaryEmail        String?
+  tertiaryEmail         String?
   secondaryPhone        String?
+  secondaryCountryCode  String?
+  tertiaryCountryCode   String?
   secondarySource       String?
   tertiarySource        String?
   sqftRange             String?
@@ -759,6 +779,8 @@ model Lead {
   tasks               Task[]
   followUps           FollowUp[]
   activities          Activity[]
+  callDetails         CallDetail[]
+  callDetailsAsCase   CallDetail[] @relation("CallDetailCase")
   cpPortalNotes       CPPortalNote[]
   greSessions         GRESession[]
   greRegistrationSessions GreSession[]
@@ -766,12 +788,12 @@ model Lead {
   ownerHistory        LeadOwnerHistory[]
   rrAssignmentHistory RRQueueHistory[]
 
-  @@unique([tenantId, phone])
   @@unique([tenantId, leadNumber])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([tenantId, ownerId])
   @@index([tenantId, email])
+  @@index([tenantId, phone])
   @@index([tenantId, company])
   @@index([tenantId, companyId])
   @@index([tenantId, mobile])
@@ -839,8 +861,11 @@ model Enquiry {
   tertiaryPhone        String?
   countryCode          String?
   secondaryCountryCode String?
+  tertiaryCountryCode  String?
   email                String?
   secondaryEmail       String?
+  tertiaryEmail        String?
+  originalSubmissionId String?
   medium               String?
   description          String?
   channelPartner       String?
@@ -852,6 +877,7 @@ model Enquiry {
   updatedAt            DateTime @updatedAt
 
   @@unique([tenantId, enquiryNumber])
+  @@unique([tenantId, originalSubmissionId])
   @@index([tenantId, leadId, createdAt])
   @@index([tenantId, phone])
   @@index([tenantId, projectId])
@@ -1054,6 +1080,7 @@ enum SiteVisitStatus {
   SCHEDULED
   COMPLETED
   CANCELLED
+  MISSED
 }
 
 model SiteVisit {
@@ -1091,6 +1118,7 @@ model SiteVisit {
   locationVerified    Boolean         @default(false)
   locationVerifiedAt  DateTime?
   status             SiteVisitStatus @default(SCHEDULED)
+  missedAt           DateTime?
   feedback           String?
   customerFeedback   String?
   completionNotes    String?
@@ -1165,6 +1193,7 @@ model Opportunity {
   expectedCloseDate DateTime?
   probability       Int?
   description       String?
+  notes             String?
   lostReason        String?
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
@@ -1172,6 +1201,7 @@ model Opportunity {
   quotations Quotation[]
   bookings   Booking[]
   activities Activity[]
+  callDetails CallDetail[]
   tasks      Task[]
   auditLogs  AuditLog[]
 
@@ -1210,6 +1240,7 @@ model Quotation {
   totalAmount Float
   taxAmount   Float?
   discount    Float?
+  paymentPlan String?
   validUntil  DateTime?
   notes       String?
   createdAt   DateTime        @default(now())
@@ -1218,6 +1249,8 @@ model Quotation {
   items     QuotationItem[]
   approvals Approval[]
   bookings  Booking[]
+  installments QuotationInstallment[]
+  receipts   Receipt[]
 
   @@unique([tenantId, number])
   @@index([tenantId])
@@ -1306,6 +1339,8 @@ model Booking {
   updatedAt   DateTime      @updatedAt
 
   payments   Payment[]
+  installments QuotationInstallment[]
+  receipts   Receipt[]
   activities Activity[]
   tasks      Task[]
   auditLogs  AuditLog[]
@@ -1339,12 +1374,103 @@ model Payment {
   reference   String?
   notes       String?
   verifiedAt  DateTime?
+  verifiedById String?
+  verifiedBy   User?      @relation("PaymentVerifier", fields: [verifiedById], references: [id])
+  rejectedAt  DateTime?
+  rejectedById String?
+  rejectedBy  User?      @relation("PaymentRejector", fields: [rejectedById], references: [id])
+  rejectionReason String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+
+  allocations PaymentAllocation[]
+  receipt     Receipt?
 
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([bookingId])
+  @@index([verifiedById])
+}
+
+model QuotationInstallment {
+  id             String     @id @default(cuid())
+  tenantId       String
+  tenant         Tenant     @relation(fields: [tenantId], references: [id])
+  quotationId    String
+  quotation      Quotation  @relation(fields: [quotationId], references: [id], onDelete: Restrict)
+  bookingId      String
+  booking        Booking    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  sequenceNumber Int
+  name           String
+  description    String?
+  percentage     Decimal?   @db.Decimal(7, 4)
+  scheduledAmount Decimal  @db.Decimal(14, 2)
+  dueDate        DateTime
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  allocations PaymentAllocation[]
+
+  @@unique([tenantId, bookingId, sequenceNumber])
+  @@index([tenantId, quotationId])
+  @@index([tenantId, bookingId, dueDate])
+}
+
+model PaymentAllocation {
+  id            String               @id @default(cuid())
+  tenantId      String
+  tenant        Tenant               @relation(fields: [tenantId], references: [id])
+  paymentId     String
+  payment       Payment              @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  installmentId String
+  installment   QuotationInstallment @relation(fields: [installmentId], references: [id], onDelete: Restrict)
+  amount        Decimal              @db.Decimal(14, 2)
+  createdAt     DateTime             @default(now())
+  createdById   String
+  createdBy     User                 @relation("PaymentAllocationCreator", fields: [createdById], references: [id])
+
+  @@unique([paymentId, installmentId])
+  @@index([tenantId, paymentId])
+  @@index([tenantId, installmentId])
+}
+
+enum ReceiptStatus {
+  ISSUED
+  CANCELLED
+}
+
+model Receipt {
+  id                     String        @id @default(cuid())
+  tenantId               String
+  tenant                 Tenant        @relation(fields: [tenantId], references: [id])
+  paymentId              String        @unique
+  payment                Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  bookingId              String
+  booking                Booking       @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  quotationId            String?
+  quotation              Quotation?    @relation(fields: [quotationId], references: [id], onDelete: Restrict)
+  receiptNumber          String
+  amount                 Decimal       @db.Decimal(14, 2)
+  receiptDate            DateTime      @default(now())
+  customerNameSnapshot   String
+  projectNameSnapshot    String
+  unitNumberSnapshot     String
+  paymentReferenceSnapshot String?
+  detailsSnapshot        Json
+  status                 ReceiptStatus @default(ISSUED)
+  issuedById             String
+  issuedBy               User          @relation("ReceiptIssuer", fields: [issuedById], references: [id])
+  cancelledAt            DateTime?
+  cancelledById          String?
+  cancelledBy            User?         @relation("ReceiptCanceller", fields: [cancelledById], references: [id])
+  cancellationReason     String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  @@unique([tenantId, receiptNumber])
+  @@index([tenantId, receiptDate])
+  @@index([tenantId, status, receiptDate])
+  @@index([tenantId, bookingId])
 }
 
 // ============================================
@@ -1505,25 +1631,30 @@ model Task {
 }
 
 model FollowUp {
-  id       String  @id @default(cuid())
-  tenantId String
-  tenant   Tenant  @relation(fields: [tenantId], references: [id])
-  leadId   String?
-  lead     Lead?   @relation(fields: [leadId], references: [id])
-  ownerId  String
-  owner    User    @relation(fields: [ownerId], references: [id])
+  id             String  @id @default(cuid())
+  followUpNumber String
+  tenantId       String
+  tenant         Tenant  @relation(fields: [tenantId], references: [id])
+  leadId         String?
+  lead           Lead?   @relation(fields: [leadId], references: [id])
+  ownerId        String
+  owner          User    @relation(fields: [ownerId], references: [id])
 
   title       String
   description String?
   dueDate     DateTime
   completedAt DateTime?
   isCompleted Boolean   @default(false)
+  isMissed    Boolean   @default(false)
+  missedAt    DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  @@unique([tenantId, followUpNumber])
   @@index([tenantId])
   @@index([tenantId, ownerId])
   @@index([leadId])
+  @@index([tenantId, isCompleted, isMissed, dueDate])
 }
 
 // ============================================
@@ -1598,6 +1729,49 @@ model Activity {
   @@index([siteVisitId])
   @@index([opportunityId])
   @@index([bookingId])
+}
+
+model CallDetail {
+  id                  String       @id @default(cuid())
+  name                String       @db.VarChar(255)
+  tenantId            String
+  tenant              Tenant       @relation(fields: [tenantId], references: [id])
+  callFrom            String?      @db.VarChar(255)
+  callId              String       @unique @default(cuid()) @db.VarChar(255)
+  callTo              String?      @db.VarChar(50)
+  callType            String       @db.VarChar(50)
+  caseId              String?
+  case                Lead?        @relation("CallDetailCase", fields: [caseId], references: [id], onDelete: SetNull)
+  createdById         String
+  createdBy           User         @relation("CallDetailCreator", fields: [createdById], references: [id])
+  duration            Int          @default(0)
+  endAt               DateTime
+  executiveContactNo  String?      @db.VarChar(50)
+  landingNumber       String?      @db.VarChar(255)
+  lastModifiedById    String?
+  lastModifiedBy      User?        @relation("CallDetailModifier", fields: [lastModifiedById], references: [id], onDelete: SetNull)
+  leadId              String
+  lead                Lead         @relation(fields: [leadId], references: [id])
+  opportunityId       String?
+  opportunity         Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  ownerId             String?
+  owner               User?        @relation("CallDetailOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  parentId            String?      @db.VarChar(100)
+  parentUrl           String?      @db.VarChar(255)
+  recordingFile       String?      @db.VarChar(255)
+  startAt             DateTime
+  status              String       @default("COMPLETED") @db.VarChar(50)
+  notes               String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId, leadId, startAt])
+  @@index([caseId])
+  @@index([createdById])
+  @@index([lastModifiedById])
+  @@index([tenantId, opportunityId])
+  @@index([ownerId])
 }
 
 model Notification {

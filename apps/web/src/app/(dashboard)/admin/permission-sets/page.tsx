@@ -336,6 +336,7 @@ export default function PermissionSetsPage() {
       });
       setCreateDialogOpen(false);
       fetchPermissionSets(pagination.page, searchQuery, statusFilter);
+      await refreshAuth();
     } catch (error: any) {
       console.error("Failed to create permission set:", error);
       toast({ title: "Create failed", description: error?.response?.data?.error || "Unable to create permission set.", variant: "destructive" as any });
@@ -363,6 +364,7 @@ export default function PermissionSetsPage() {
       });
       setEditDialogOpen(false);
       fetchPermissionSets(pagination.page, searchQuery, statusFilter);
+      await refreshAuth();
     } catch (error: any) {
       console.error("Failed to update permission set:", error);
       toast({ title: "Update failed", description: error?.response?.data?.error || "Unable to update permission set.", variant: "destructive" as any });
@@ -378,6 +380,7 @@ export default function PermissionSetsPage() {
       await newPermissionSetApi.delete(selectedPermissionSet.id);
       setDeleteDialogOpen(false);
       fetchPermissionSets(pagination.page, searchQuery, statusFilter);
+      await refreshAuth();
     } catch (error: any) {
       console.error("Failed to delete permission set:", error);
       toast({ title: "Delete failed", description: error?.response?.data?.error || "Unable to delete permission set.", variant: "destructive" as any });

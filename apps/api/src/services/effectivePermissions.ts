@@ -1,4 +1,5 @@
 import { prisma } from '@dct-crm/db';
+import { normalizePermissionName } from '@dct-crm/shared';
 
 export interface EffectivePermission {
   name: string;
@@ -51,7 +52,9 @@ export class EffectivePermissionService {
   }
 
   static hasPermissionIn(perms: EffectivePermission[], permissionName: string): boolean {
-    return perms.some((p) => p.name === permissionName) || perms.some((p) => p.name === FULL_SYSTEM_ACCESS);
+    const normalizedName = normalizePermissionName(permissionName);
+    return perms.some((permission) => normalizePermissionName(permission.name) === normalizedName) ||
+      perms.some((permission) => permission.name === FULL_SYSTEM_ACCESS);
   }
 
   static async getEffectivePermissions(userId: string): Promise<EffectivePermission[]> {

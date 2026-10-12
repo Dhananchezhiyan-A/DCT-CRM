@@ -53,10 +53,7 @@ interface LayoutDrivenFormProps {
   fields?: any[];
   projects?: { id: string; name: string; isActive?: boolean }[];
   fieldErrors?: Record<string, string>;
-  editingField?: string | null;
   onBeginEdit?: (fieldName: string) => void;
-  onSaveField?: () => void;
-  onCancelField?: () => void;
 }
 
 export default function LayoutDrivenForm({
@@ -69,10 +66,7 @@ export default function LayoutDrivenForm({
   fields: propFields,
   projects = [],
   fieldErrors,
-  editingField,
   onBeginEdit,
-  onSaveField,
-  onCancelField,
 }: LayoutDrivenFormProps) {
   const [layout, setLayout] = React.useState<any>(propLayout || null);
   const [fields, setFields] = React.useState<LayoutField[]>(propFields || []);
@@ -124,14 +118,31 @@ export default function LayoutDrivenForm({
             fields: section.fields.filter((field): field is string => typeof field === "string"),
           }))
       : [];
-    if (objectName !== "Lead" || configuredSections.some((section) => section.fields.includes("projectId"))) {
+    if (objectName !== "Lead") {
       return configuredSections;
     }
-    const leadDetailsIndex = configuredSections.findIndex((section) => section.name === "Lead Details");
-    if (leadDetailsIndex < 0) return [...configuredSections, { name: "Lead Details", fields: ["projectId"] }];
-    return configuredSections.map((section, index) => index === leadDetailsIndex
-      ? { ...section, fields: ["projectId", ...section.fields] }
-      : section);
+    const leadInformationIndex = configuredSections.findIndex(
+      (section) => section.name === "Lead Information" || section.name === "Lead Details",
+    );
+    if (leadInformationIndex < 0) {
+      return [
+        ...configuredSections.map((section) => ({
+          ...section,
+          fields: section.fields.filter((field) => field !== "projectId"),
+        })),
+        { name: "Lead Information", fields: ["projectId"] },
+      ];
+    }
+    return configuredSections.flatMap((section, index) => {
+      const fields = section.fields.filter((field) => field !== "projectId");
+      if (index !== leadInformationIndex) {
+        return [{ ...section, fields }];
+      }
+      return [{
+        name: "Lead Information",
+        fields: ["projectId", ...fields],
+      }];
+    });
   }, [layout, objectName]);
 
   const formFields = React.useMemo(() => {
@@ -157,10 +168,7 @@ export default function LayoutDrivenForm({
   };
 
   const renderField = (field: LayoutField, value: any) => {
-    const isDisabled =
-      (mode === "detail" && field.name !== editingField) ||
-      !field.editable ||
-      field.isSystemField;
+    const isDisabled = mode === "detail" || !field.editable || field.isSystemField;
 
     switch (field.fieldType) {
       case "text":
@@ -424,13 +432,16 @@ export default function LayoutDrivenForm({
         if (visibleFields.length === 0) return null;
 
         return (
-          <Card key={sectionIdx}>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+          <Card
+            key={sectionIdx}
+            className={objectName === "Lead" ? "rounded-md border-slate-200 shadow-sm" : undefined}
+          >
+            <CardHeader className={`pb-3 ${objectName === "Lead" ? "border-b border-sky-100 bg-[#f5faff] px-4 py-3" : ""}`}>
+              <CardTitle className={`font-medium ${objectName === "Lead" ? "text-[12px] text-slate-700" : "text-sm text-muted-foreground"}`}>
                 {section.name}
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className={objectName === "Lead" ? "px-4 py-2" : undefined}>
               <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">
                 {visibleFields.map((field) => (
                   <div
@@ -441,25 +452,25 @@ export default function LayoutDrivenForm({
                         : ""
                     }`}
                   >
-                    {mode === "detail" && editingField !== field.name ? (
-                      <div className="flex min-h-10 items-center justify-between gap-3 border-b py-2">
-                        <Label className="w-2/5 shrink-0 text-xs font-medium text-muted-foreground">
+                    {mode === "detail" ? (
+                      <div className={`flex min-h-10 items-center justify-between gap-3 border-b py-2 ${objectName === "Lead" ? "border-sky-100" : ""}`}>
+                        <Label className={`w-2/5 shrink-0 font-medium text-muted-foreground ${objectName === "Lead" ? "text-[10px]" : "text-xs"}`}>
                           {field.label}
                         </Label>
-                        <div className="min-w-0 flex-1 break-words text-sm font-medium">
+                        <div className={`min-w-0 flex-1 break-words font-medium ${objectName === "Lead" ? "text-[12px]" : "text-sm"}`}>
                           {displayValue(field, data[field.name])}
                           {fieldErrors?.[field.name] && (
-                            <p className="text-sm text-destructive" data-testid={`error-${field.name}`}>
+                            <p className={objectName === "Lead" ? "text-[11px] text-destructive" : "text-sm text-destructive"} data-testid={`error-${field.name}`}>
                               {fieldErrors[field.name]}
                             </p>
                           )}
                         </div>
-                        {!editingField && onBeginEdit && field.editable && !field.isSystemField && (
+                        {onBeginEdit && field.editable && !field.isSystemField && (
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 shrink-0 text-muted-foreground"
+                            className={`h-7 w-7 shrink-0 ${objectName === "Lead" ? "text-blue-500 hover:bg-sky-50 hover:text-blue-700" : "text-muted-foreground"}`}
                             aria-label={`Edit ${field.label}`}
                             onClick={() => onBeginEdit(field.name)}
                           >
@@ -469,24 +480,12 @@ export default function LayoutDrivenForm({
                       </div>
                     ) : (
                       <div className="space-y-1.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <Label className="text-sm">
-                            {field.label}
-                            {field.required && mode === "create" && (
-                              <span className="ml-1 text-destructive">*</span>
-                            )}
-                          </Label>
-                          {editingField === field.name && (
-                            <div className="flex shrink-0 items-center gap-2">
-                              <Button type="button" size="sm" onClick={onSaveField}>
-                                Save
-                              </Button>
-                              <Button type="button" size="sm" variant="outline" onClick={onCancelField}>
-                                Cancel
-                              </Button>
-                            </div>
+                        <Label className="text-sm">
+                          {field.label}
+                          {field.required && mode === "create" && (
+                            <span className="ml-1 text-destructive">*</span>
                           )}
-                        </div>
+                        </Label>
                         {renderField(field, data[field.name])}
                         {fieldErrors?.[field.name] && (
                           <p className="text-sm text-destructive" data-testid={`error-${field.name}`}>

@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { parse } from 'csv-parse/sync';
 import { prisma } from '@dct-crm/db';
+import { leadCreateSchema } from '@dct-crm/shared';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permissions';
 import { bulkCreateRecords, listRecords } from '../services/dynamicCrud';
@@ -11,6 +12,11 @@ import {
   getScopeClause,
   leadScopeClause,
 } from '../services/recordAccess';
+import {
+  processLeadEnquiryBatch,
+  sourceEnumValue,
+  type LeadEnquiryInput,
+} from '../services/enquiryProcessing';
 
 const router = Router();
 router.use(authenticate);
@@ -91,6 +97,118 @@ router.post('/import', requirePermission('DATA_IMPORT'), async (req: AuthRequest
       const delegate = (prisma as any)[standardConfig.model];
       const fieldTypes = new Map(availableFields.map((field: any) => [field.name, field.fieldType]));
       const imported: any[] = [];
+
+      if (standardConfig.model === 'lead') {
+        const leadFields = new Set(Object.keys(leadCreateSchema.shape));
+        const enquiryFields = new Set([
+          'secondaryPhone', 'tertiaryPhone', 'secondaryEmail', 'tertiaryEmail',
+          'originalSubmissionId', 'countryCode',
+          'secondaryCountryCode', 'tertiaryCountryCode', 'subSource', 'campaignId',
+          'campaign', 'subCampaignId', 'subCampaign', 'medium', 'enquiryDescription',
+          'channelPartner', 'enquiryDate',
+        ]);
+        const inputs: LeadEnquiryInput[] = [];
+        for (let index = 0; index < records.length; index += 1) {
+          const row = records[index];
+          const values: Record<string, unknown> = {};
+          const customFields: Record<string, unknown> = {};
+          for (const field of fields) {
+            const value = convertImportValue(String(row[field] ?? ''), fieldTypes.get(field) || 'text');
+            if (value === undefined) continue;
+            if (leadFields.has(field)) values[field] = value;
+            else if (!enquiryFields.has(field)) customFields[field] = value;
+          }
+          const source = typeof values.source === 'string' ? values.source : 'OTHER';
+          const phone = typeof values.phone === 'string' ? values.phone : '';
+          const countryCode = String(row.countryCode || row.phoneCountryCode || '91');
+          const leadResult = leadCreateSchema.safeParse({
+            ...values,
+            source: sourceEnumValue(source),
+            phone,
+            company: values.company || [values.firstName, values.lastName].filter(Boolean).join(' '),
+            customFields: { ...(values.customFields as Record<string, unknown> || {}), ...customFields },
+          });
+          if (!leadResult.success) {
+            return res.status(400).json({
+              success: false,
+              error: `Import failed on row ${index + 2}: ${leadResult.error.issues[0]?.message || 'Invalid Lead data'}`,
+              row: index + 2,
+              fieldErrors: leadResult.error.issues.map((issue) => ({
+                field: issue.path.join('.'),
+                message: issue.message,
+              })),
+            });
+          }
+          inputs.push({
+            tenantId: req.tenantId!,
+            userId: req.user!.id,
+            profileName: req.user!.profileName,
+            lead: leadResult.data,
+            enquiry: {
+              source,
+              subSource: String(row.subSource || row.leadSubSource || '') || undefined,
+              campaignId: String(row.campaignId || '') || undefined,
+              campaign: String(row.campaign || '') || undefined,
+              subCampaignId: String(row.subCampaignId || '') || undefined,
+              subCampaign: String(row.subCampaign || '') || undefined,
+              secondaryPhone: String(row.secondaryPhone || '') || undefined,
+              tertiaryPhone: String(row.tertiaryPhone || '') || undefined,
+              secondaryEmail: String(row.secondaryEmail || '') || undefined,
+              tertiaryEmail: String(row.tertiaryEmail || '') || undefined,
+              originalSubmissionId: String(
+                row.originalSubmissionId
+                || row.sourceSubmissionId
+                || (req.get('Idempotency-Key') ? `${req.get('Idempotency-Key')}:${index + 1}` : ''),
+              ) || undefined,
+              countryCode,
+              secondaryCountryCode: String(row.secondaryCountryCode || countryCode),
+              tertiaryCountryCode: String(row.tertiaryCountryCode || row.secondaryCountryCode || countryCode),
+              medium: String(row.medium || '') || undefined,
+              description: String(row.enquiryDescription || row.description || '') || undefined,
+              channelPartner: String(row.channelPartner || '') || undefined,
+              enquiryDate: row.enquiryDate ? new Date(String(row.enquiryDate)) : undefined,
+            },
+          });
+        }
+        try {
+          const results = await processLeadEnquiryBatch(inputs);
+          const imported = results.map((result) => ({
+            action: result.action,
+            leadId: result.leadId,
+            enquiryId: result.enquiry?.id,
+            record: result.lead,
+          }));
+          return res.status(201).json({
+            success: true,
+            data: {
+              count: imported.filter((item) => item.action === 'NEW_LEAD').length,
+              linkedEnquiries: imported.filter((item) => item.action !== 'NEW_LEAD').length,
+              records: imported,
+            },
+          });
+        } catch (error: any) {
+          const row = typeof error?.rowIndex === 'number' ? error.rowIndex + 2 : undefined;
+          if (error?.message === 'DUPLICATE_CONFLICT' || error?.message === 'LEAD_MISMATCH') {
+            return res.status(409).json({
+              success: false,
+              action: error.message,
+              ...(row ? { row } : {}),
+              importedCount: 0,
+              error: row
+                ? `Import rolled back at row ${row}; multiple or changed duplicate matches require review.`
+                : 'Import rolled back because a duplicate match requires review.',
+            });
+          }
+          const detail = error?.validationErrors?.[0]?.message || error?.message || 'Invalid row';
+          return res.status(400).json({
+            success: false,
+            error: row ? `Import rolled back at row ${row}: ${detail}` : detail,
+            ...(row ? { row } : {}),
+            fieldErrors: error?.validationErrors,
+            importedCount: 0,
+          });
+        }
+      }
 
       for (let index = 0; index < records.length; index += 1) {
         const row = records[index];

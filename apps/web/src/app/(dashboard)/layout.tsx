@@ -41,6 +41,7 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
     pathname.startsWith("/quotations") ? "QUOTATION_READ" :
     pathname.startsWith("/bookings") ? "BOOKING_READ" :
     pathname.startsWith("/payments") ? "PAYMENT_READ" :
+    pathname.startsWith("/receipts") ? "RECEIPT_READ" :
     pathname.startsWith("/projects") ? "PROJECT_READ" :
     pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard/") ? "DASHBOARD_READ" :
     pathname.startsWith("/reports") ? "REPORT_VIEW" :
@@ -49,6 +50,17 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
   const isCustomizeHomeRoute =
     pathname === "/admin/customize-home" ||
     pathname.startsWith("/admin/customize-home/");
+  const isObjectManagerRoute =
+    pathname === "/admin/object-manager" ||
+    pathname.startsWith("/admin/object-manager/");
+  const canManageObjects =
+    isSuperAdmin ||
+    (isAdmin && (hasFullAccess || hasEffectivePermission("PROFILE_PERMISSION_MANAGE")));
+  const isRestrictedAdminRoute =
+    pathname.startsWith("/admin") &&
+    !isCustomizeHomeRoute &&
+    !(isObjectManagerRoute && canManageObjects) &&
+    !isSuperAdmin;
 
   React.useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -59,16 +71,16 @@ function DashboardAccessGuard({ children }: { children: React.ReactNode }) {
       router.replace("/home");
     } else if (!isLoading && isCustomizeHomeRoute && !isAdmin && !isSuperAdmin) {
       router.replace("/home");
-    } else if (!isLoading && pathname.startsWith("/admin") && !isCustomizeHomeRoute && !isSuperAdmin) {
+    } else if (!isLoading && isRestrictedAdminRoute) {
       router.replace("/home");
     }
-  }, [hasEffectivePermission, hasFullAccess, isAdmin, isLoading, isAuthenticated, isSuperAdmin, isCustomizeHomeRoute, pathname, requiredPermission, router]);
+  }, [hasEffectivePermission, hasFullAccess, isAdmin, isLoading, isAuthenticated, isSuperAdmin, isCustomizeHomeRoute, isRestrictedAdminRoute, pathname, requiredPermission, router]);
 
   if (isLoading || !isAuthenticated) return null;
   if (requiredPermission && !(hasFullAccess || hasEffectivePermission(requiredPermission))) return null;
   if (pathname.startsWith("/setup") && !isAdmin && !isSuperAdmin) return null;
   if (isCustomizeHomeRoute && !isAdmin && !isSuperAdmin) return null;
-  if (pathname.startsWith("/admin") && !isCustomizeHomeRoute && !isSuperAdmin) return null;
+  if (isRestrictedAdminRoute) return null;
   return <>{children}</>;
 }
 

@@ -16,8 +16,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Search, Bell, Menu, Settings, LogOut, User, HelpCircle, ChevronDown } from "lucide-react";
-import { SearchDialog } from "@/components/crm/search-dialog";
+import { Bell, Menu, Settings, LogOut, User, HelpCircle, ChevronDown } from "lucide-react";
+import { GlobalSearch } from "@/components/crm/global-search";
 import { useAuth } from "@/contexts/auth-context";
 import { homepageApi } from "@/lib/api";
 
@@ -31,7 +31,6 @@ export function Header({ onMenuClick }: HeaderProps) {
   const searchParams = useSearchParams();
   const isAuthenticated = Boolean(user);
   const showHomeSelector = isAuthenticated && isAdmin && !isSuperAdmin;
-  const [searchOpen, setSearchOpen] = React.useState(false);
   const [adminHomeOpen, setAdminHomeOpen] = React.useState(false);
   const [adminHomepages, setAdminHomepages] = React.useState<{ id: string; name: string }[]>([]);
   const homepageRefreshId = React.useRef(0);
@@ -108,26 +107,16 @@ export function Header({ onMenuClick }: HeaderProps) {
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-card px-4">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onMenuClick}
-          className="lg:hidden"
-        >
-          <Menu className="h-4 w-4" />
-        </Button>
-        <div className="flex-1">
-          <Button
-            variant="outline"
-            className="w-full justify-start gap-2 text-muted-foreground md:w-80"
-            onClick={() => setSearchOpen(true)}
-          >
-            <Search className="h-4 w-4" />
-            <span className="truncate">Search leads, opportunities, tasks...</span>
+      <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-sky-100 bg-[#eef8ff] px-4 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(320px,700px)_minmax(0,1fr)]">
+        <div className="flex shrink-0 items-center">
+          <Button variant="ghost" size="icon" onClick={onMenuClick} className="lg:hidden">
+            <Menu className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-1 justify-center lg:w-full">
+          <GlobalSearch />
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-1">
           {showHomeSelector && (
             <DropdownMenu
               modal={false}
@@ -142,7 +131,7 @@ export function Header({ onMenuClick }: HeaderProps) {
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
-                  className="h-9 border border-border bg-background px-3 text-sm font-medium text-foreground shadow-sm"
+                  className="h-9 border border-sky-100 bg-white px-3 text-sm font-medium text-foreground shadow-sm"
                 >
                   <span className="max-w-48 truncate">{selectedHomepage?.name || "Admin Home"}</span>
                   <ChevronDown className="ml-2 h-4 w-4" />
@@ -265,7 +254,6 @@ export function Header({ onMenuClick }: HeaderProps) {
           </DropdownMenu>
         </div>
       </header>
-      <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
     </>
   );
 }

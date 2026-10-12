@@ -10,8 +10,11 @@ Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
 const testState = vi.hoisted(() => ({
   leadGet: vi.fn(),
   pushToSVC: vi.fn(),
+  updateLead: vi.fn(),
   scheduleSiteVisit: vi.fn(),
   projectList: vi.fn(),
+  layout: null as any,
+  fieldList: [] as any[],
   getActivityHistory: vi.fn(),
   getAuditHistory: vi.fn(),
   getNotes: vi.fn(),
@@ -47,13 +50,14 @@ vi.mock("@/lib/api", () => ({
   leadApi: {
     get: testState.leadGet,
     pushToSVC: testState.pushToSVC,
+    update: testState.updateLead,
     scheduleSiteVisit: testState.scheduleSiteVisit,
     getActivityHistory: testState.getActivityHistory,
     getAuditHistory: testState.getAuditHistory,
   },
   objectManagerApi: {
-    getDefaultLayout: vi.fn().mockResolvedValue({ data: { data: null } }),
-    listFields: vi.fn().mockResolvedValue({ data: { data: [] } }),
+    getDefaultLayout: vi.fn().mockImplementation(() => Promise.resolve({ data: { data: testState.layout } })),
+    listFields: vi.fn().mockImplementation(() => Promise.resolve({ data: { data: testState.fieldList } })),
   },
   projectApi: { listAll: testState.projectList },
   unitApi: { list: vi.fn() },
@@ -67,7 +71,37 @@ vi.mock("@/lib/api", () => ({
   bookingApi: {},
 }));
 
-vi.mock("@/components/admin/layout-driven-form", () => ({ default: () => null }));
+vi.mock("@/components/admin/layout-driven-form", () => ({
+  default: (props: any) => {
+    const customField = props.fields?.find((field: any) => field.name === "sf_Area_preferred_to_buy_a_plot__c");
+    const projectEditButton = React.createElement(
+      "button",
+      { type: "button", onClick: () => props.onBeginEdit?.("projectId") },
+      "Edit Project",
+    );
+    if (!customField) return projectEditButton;
+    const fieldName = customField.name;
+    return React.createElement(
+      "div",
+      null,
+      projectEditButton,
+      React.createElement("span", null, String(props.data[fieldName] ?? "")),
+      React.createElement("button", { type: "button", onClick: () => props.onBeginEdit(fieldName) }, "Edit Area"),
+      props.editingField === fieldName
+        ? React.createElement(
+            "div",
+            null,
+            React.createElement("input", {
+              "aria-label": customField.label,
+              value: props.data[fieldName] ?? "",
+              onChange: (event: React.ChangeEvent<HTMLInputElement>) => props.onChange(fieldName, event.target.value),
+            }),
+            React.createElement("button", { type: "button", onClick: props.onSaveField }, "Save Area"),
+          )
+        : null,
+    );
+  },
+}));
 
 import LeadDetailPage from "../app/(dashboard)/leads/[id]/page";
 
@@ -76,6 +110,11 @@ const incomingLead = {
   leadNumber: "L-001",
   firstName: "Taylor",
   lastName: "Customer",
+  phone: "555-0100",
+  company: "Customer Co",
+  projectId: "project-1",
+  project: { id: "project-1", name: "North Tower" },
+  customFields: {},
   status: "INCOMING",
   ownerId: "presales-1",
   owner: { id: "presales-1", firstName: "Pre", lastName: "Sales" },
@@ -92,6 +131,9 @@ beforeEach(() => {
   testState.profile.name = "Presales";
   testState.leadUpdatePermission = true;
   testState.effectivePermissions = [];
+  testState.layout = null;
+  testState.fieldList = [];
+  testState.projectList.mockResolvedValue([]);
   testState.getActivityHistory.mockResolvedValue({ data: { success: true, data: [] } });
   testState.getAuditHistory.mockResolvedValue({ data: { success: true, data: [] } });
   testState.getNotes.mockResolvedValue({ data: { success: true, data: { notes: "" } } });
@@ -162,6 +204,95 @@ describe("Push to SVC", () => {
     expect(testState.leadGet).toHaveBeenCalledTimes(1);
     expect((await screen.findAllByText("Prospect")).length).toBeGreaterThan(0);
     expect(screen.getByText("Sam Coordinator")).toBeInTheDocument();
+  });
+
+  it("saves edited Lead Information through the lead update API before pushing", async () => {
+    testState.updateLead.mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...incomingLead, lastName: "Updated", phone: "555-0101" },
+      },
+    });
+    testState.pushToSVC.mockResolvedValue({
+      data: { success: true, data: { ...incomingLead, lastName: "Updated", status: "PROSPECT" } },
+    });
+
+    render(<LeadDetailPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Push to SVC" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Last Name *"), { target: { value: "Updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(testState.updateLead).toHaveBeenCalledWith("lead-1", expect.objectContaining({
+        lastName: "Updated",
+        projectId: "project-1",
+      }));
+      expect(testState.toast).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Success",
+        description: "Lead information updated successfully.",
+      }));
+    });
+
+    fireEvent.change(screen.getByLabelText("Reason / Note *"), { target: { value: "Ready for site visit" } });
+    fireEvent.click(screen.getByRole("button", { name: "Push to SVC" }));
+    await waitFor(() => expect(testState.pushToSVC).toHaveBeenCalledWith("lead-1", { reason: "Ready for site visit" }));
+    expect(testState.updateLead.mock.invocationCallOrder[0]).toBeLessThan(testState.pushToSVC.mock.invocationCallOrder[0]);
+  });
+
+  it("saves imported custom fields through the customFields API payload", async () => {
+    const fieldName = "sf_Area_preferred_to_buy_a_plot__c";
+    const leadWithCustomField = {
+      ...incomingLead,
+      customFields: { [fieldName]: "Coastal" },
+    };
+    testState.layout = { sections: [] };
+    testState.fieldList = [{
+      name: fieldName,
+      label: "Preferred Area",
+      editable: true,
+      isStandardField: false,
+      isSystemField: false,
+      fieldType: "text",
+    }];
+    testState.leadGet
+      .mockReset()
+      .mockResolvedValueOnce({ data: { success: true, data: leadWithCustomField } })
+      .mockResolvedValue({ data: { success: true, data: leadWithCustomField } });
+    testState.updateLead.mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...leadWithCustomField, customFields: { [fieldName]: "Mountain" } },
+      },
+    });
+
+    render(<LeadDetailPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Area" }));
+    fireEvent.change(screen.getByLabelText("Preferred Area"), { target: { value: "Mountain" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Area" }));
+
+    await waitFor(() => {
+      expect(testState.updateLead).toHaveBeenCalledWith("lead-1", {
+        customFields: { [fieldName]: "Mountain" },
+      });
+    });
+  });
+
+  it("loads project choices when opening the inline Project editor", async () => {
+    testState.layout = { sections: [] };
+    testState.projectList.mockResolvedValue([
+      { id: "project-2", name: "DCT Heights", isActive: true },
+    ]);
+
+    render(<LeadDetailPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Project" }));
+
+    await waitFor(() => {
+      expect(testState.projectList).toHaveBeenCalledWith({ isActive: true });
+    });
   });
 
   it("keeps genuine Push API failures visible as errors", async () => {
@@ -244,7 +375,7 @@ describe("SVC Site Visit project selection", () => {
     });
     fireEvent.click(screen.getByRole("combobox", { name: "Project *" }));
     fireEvent.click(await screen.findByRole("option", { name: "North Tower" }));
-    expect(screen.getByText("North Tower")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Project *" })).toHaveTextContent("North Tower");
 
     fireEvent.change(screen.getByLabelText("Note / Reason *"), {
       target: { value: "Customer requested a site visit" },

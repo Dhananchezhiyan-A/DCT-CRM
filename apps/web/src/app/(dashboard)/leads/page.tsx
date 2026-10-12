@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 
 import { LeadList, Lead } from "@/components/crm/lead-list";
 
-import { Plus, AlertCircle, RotateCcw } from "lucide-react";
+import { Plus, AlertCircle, Search, CalendarDays, Link2, Layers3, UsersRound } from "lucide-react";
 
 const STATUS_LABELS: Record<string, string> = {
   NEW: "New",
@@ -147,28 +147,26 @@ export default function LeadsPage() {
     setCurrentPage(page);
   };
 
-  const clearFilters = () => {
-    setSearch("");
-    setDebouncedSearch("");
-    setStatusFilter("");
-    setSourceFilter("");
-    setDateFrom("");
-    setDateTo("");
-    setCurrentPage(1);
-  };
+  const filterLabelClass = "mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-[#1479a8]";
+  const filterControlClass = "h-9 w-full rounded-md border border-sky-200 bg-white px-3 text-[12px] text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">Leads</h1>
-          <p className="text-muted-foreground">
-            Manage your leads and track their progress
-          </p>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between px-1 py-1">
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-sky-100 bg-gradient-to-br from-white to-sky-50 text-blue-600 shadow-sm">
+            <UsersRound className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-[#075d91]">Leads</h1>
+            <p className="text-[12px] text-[#1479a8]">
+              Manage your leads and track their progress
+            </p>
+          </div>
         </div>
         {canCreateLead && (
-          <Button onClick={() => router.push("/leads/new")}>
-            <Plus className="mr-2 h-4 w-4" />
+          <Button className="h-9 bg-gradient-to-r from-blue-600 to-blue-500 px-3 text-[12px] text-white shadow-sm shadow-blue-200 hover:from-blue-700 hover:to-blue-600" onClick={() => router.push("/leads/new")}>
+            <Plus className="mr-1.5 h-4 w-4" />
             Create Lead
           </Button>
         )}
@@ -181,26 +179,29 @@ export default function LeadsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <div>
-          <label className="text-sm font-medium">Search</label>
+      <div className="grid grid-cols-1 gap-3 rounded-xl border border-sky-100 bg-[#f5fbff] p-3 shadow-sm sm:grid-cols-2 md:grid-cols-5 md:items-end">
+        <div className="min-w-0">
+          <label className={filterLabelClass}><Search className="h-3.5 w-3.5" />Search</label>
+          <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#278db8]" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search leads..."
-            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-[13px]"
+            className={`${filterControlClass} pl-8`}
           />
+          </div>
         </div>
-        <div>
-          <label className="text-sm font-medium">Status</label>
+        <div className="min-w-0">
+          <label className={filterLabelClass}><Layers3 className="h-3.5 w-3.5" />Status</label>
           <select
             value={statusFilter}
             onChange={(e) => {
               setStatusFilter(e.target.value);
               setCurrentPage(1);
             }}
-            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-[13px]"
+            className={filterControlClass}
           >
             <option value="">All Statuses</option>
             {allowedStatuses.map((s) => (
@@ -210,15 +211,15 @@ export default function LeadsPage() {
             ))}
           </select>
         </div>
-        <div>
-          <label className="text-sm font-medium">Source</label>
+        <div className="min-w-0">
+          <label className={filterLabelClass}><Link2 className="h-3.5 w-3.5" />Source</label>
           <select
             value={sourceFilter}
             onChange={(e) => {
               setSourceFilter(e.target.value);
               setCurrentPage(1);
             }}
-            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-[13px]"
+            className={filterControlClass}
           >
             <option value="">All Sources</option>
             {SOURCE_OPTIONS.map((s) => (
@@ -228,8 +229,8 @@ export default function LeadsPage() {
             ))}
           </select>
         </div>
-        <div>
-          <label className="text-sm font-medium">From</label>
+        <div className="min-w-0">
+          <label className={filterLabelClass}><CalendarDays className="h-3.5 w-3.5" />From</label>
           <input
             type="date"
             value={dateFrom}
@@ -237,11 +238,11 @@ export default function LeadsPage() {
               setDateFrom(e.target.value);
               setCurrentPage(1);
             }}
-            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            className={filterControlClass}
           />
         </div>
-        <div>
-          <label className="text-sm font-medium">To</label>
+        <div className="min-w-0">
+          <label className={filterLabelClass}><CalendarDays className="h-3.5 w-3.5" />To</label>
           <input
             type="date"
             value={dateTo}
@@ -249,19 +250,10 @@ export default function LeadsPage() {
               setDateTo(e.target.value);
               setCurrentPage(1);
             }}
-            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            className={filterControlClass}
           />
         </div>
       </div>
-
-      {(search || statusFilter || sourceFilter || dateFrom || dateTo) && (
-        <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={clearFilters}>
-            <RotateCcw className="mr-2 h-4 w-4" />
-            Clear filters
-          </Button>
-        </div>
-      )}
 
       <LeadList
         leads={leads}

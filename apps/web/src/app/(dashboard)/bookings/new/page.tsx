@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
-import { bookingApi, projectApi, unitApi } from "@/lib/api";
+import { bookingApi, projectApi, quotationApi, unitApi } from "@/lib/api";
 
 type Project = { id: string; name: string };
 type Unit = { id: string; number: string; type?: string | null; area?: number | null; price?: number | null; status?: string };
@@ -28,6 +28,7 @@ export default function NewBookingPage() {
   const [quotationId, setQuotationId] = React.useState("");
   const [isLoadingProjects, setIsLoadingProjects] = React.useState(true);
   const [isLoadingUnits, setIsLoadingUnits] = React.useState(false);
+  const [isLoadingQuotation, setIsLoadingQuotation] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   React.useEffect(() => {
@@ -39,6 +40,35 @@ export default function NewBookingPage() {
     setOpportunityId(params.get("opportunityId") || "");
     setQuotationId(params.get("quotationId") || "");
   }, []);
+
+  React.useEffect(() => {
+    if (!quotationId) return;
+    let cancelled = false;
+    setIsLoadingQuotation(true);
+    quotationApi.get(quotationId).then((response) => {
+      const quotation = response.data?.data;
+      if (!response.data?.success || !quotation) {
+        throw new Error(response.data?.error || "Could not load the linked quotation");
+      }
+      const quotationUnitId = quotation.items?.[0]?.unit?.id;
+      if (!cancelled) {
+        setProjectId(quotation.projectId || "");
+        setUnitId(quotationUnitId || "");
+        setTotalAmount(String(quotation.totalAmount || ""));
+      }
+    }).catch((error: any) => {
+      if (!cancelled) {
+        toast({
+          title: "Quotation could not be loaded",
+          description: error?.response?.data?.error || error?.message || "Reload the opportunity and try again.",
+          variant: "destructive" as any,
+        });
+      }
+    }).finally(() => {
+      if (!cancelled) setIsLoadingQuotation(false);
+    });
+    return () => { cancelled = true; };
+  }, [quotationId, toast]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -97,7 +127,11 @@ export default function NewBookingPage() {
       const booking = response.data?.data;
       if (!response.data?.success || !booking?.id) throw new Error(response.data?.error || "Booking was not created");
       toast({ title: "Booking created", description: `${booking.number || "Booking"} is ready for payment recording.` });
-      router.push(opportunityId ? `/opportunities/${opportunityId}?tab=receipt` : `/bookings/${booking.id}`);
+      router.push(
+        opportunityId
+          ? `/opportunities/${opportunityId}?tab=create-receipt`
+          : `/bookings/${booking.id}`,
+      );
     } catch (error: any) {
       toast({ title: "Error", description: error?.response?.data?.error || error?.message || "Failed to create booking", variant: "destructive" as any });
     } finally {
@@ -121,7 +155,7 @@ export default function NewBookingPage() {
         {quotationId && <p className="text-sm text-muted-foreground">This booking will be linked to the selected opportunity and quotation.</p>}
         <div className="space-y-2">
           <Label htmlFor="booking-project">Project *</Label>
-          <select id="booking-project" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={projectId} disabled={isLoadingProjects || Boolean(quotationId)} onChange={(event) => {
+          <select id="booking-project" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={projectId} disabled={isLoadingProjects || isLoadingQuotation || Boolean(quotationId)} onChange={(event) => {
             setProjectId(event.target.value);
             setUnitId("");
             if (!quotationId) setTotalAmount("");
@@ -132,7 +166,7 @@ export default function NewBookingPage() {
         </div>
         <div className="space-y-2">
           <Label htmlFor="booking-unit">Available Unit *</Label>
-          <select id="booking-unit" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={unitId} disabled={!projectId || isLoadingUnits || units.length === 0 || (Boolean(quotationId) && Boolean(unitId))} onChange={(event) => {
+          <select id="booking-unit" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={unitId} disabled={!projectId || isLoadingQuotation || isLoadingUnits || units.length === 0 || (Boolean(quotationId) && Boolean(unitId))} onChange={(event) => {
             const unit = units.find((item) => item.id === event.target.value);
             setUnitId(event.target.value);
             if (!quotationId && unit?.price) setTotalAmount(String(unit.price));
@@ -144,7 +178,8 @@ export default function NewBookingPage() {
         {selectedUnit && <p className="text-sm text-muted-foreground">Selected: {selectedUnit.number}{selectedUnit.type ? ` · ${selectedUnit.type}` : ""}{selectedUnit.area ? ` · ${selectedUnit.area} sq.ft` : ""}</p>}
         <div className="space-y-2">
           <Label htmlFor="booking-total-amount">Total Amount (₹) *</Label>
-          <Input id="booking-total-amount" type="number" min="0.01" step="0.01" value={totalAmount} onChange={(event) => setTotalAmount(event.target.value)} />
+          <Input id="booking-total-amount" type="number" min="0.01" step="0.01" value={totalAmount} disabled={Boolean(quotationId) || isLoadingQuotation} onChange={(event) => setTotalAmount(event.target.value)} />
+          {quotationId && <p className="text-xs text-muted-foreground">This amount is taken from the linked quotation.</p>}
         </div>
         <div className="flex gap-3">
           <Button onClick={handleCreateBooking} disabled={isSubmitting || !hasEffectivePermission("BOOKING_CREATE")}>

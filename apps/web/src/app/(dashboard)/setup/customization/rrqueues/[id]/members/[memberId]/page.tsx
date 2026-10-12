@@ -36,6 +36,8 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
   const [draftActiveMember, setDraftActiveMember] = React.useState(true);
   const [draftAvailable, setDraftAvailable] = React.useState(true);
   const [draftWorking, setDraftWorking] = React.useState(true);
+  const [draftWeekOff, setDraftWeekOff] = React.useState(false);
+  const [draftMaxLeadCapacity, setDraftMaxLeadCapacity] = React.useState("-1");
   const [saving, setSaving] = React.useState(false);
 
   React.useEffect(() => {
@@ -56,25 +58,35 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
     if (!user) return false;
     return MEMBER_PROFILE_NAMES[userType].includes(user.profile?.name?.toLowerCase());
   };
-  const canSaveSelection = !!draftUserId && (draftUserId === member?.user?.id || matchesSelectedType(draftUserId, draftUserType));
+  const selectionUnchanged = draftUserId === member?.user?.id && draftUserType === member?.userType;
+  const canSaveSelection = selectionUnchanged || (!!draftUserId && matchesSelectedType(draftUserId, draftUserType));
 
   const saveChanges = async () => {
+    const maxLeadCapacity = Number(draftMaxLeadCapacity);
+    if (!draftMaxLeadCapacity.trim() || !Number.isInteger(maxLeadCapacity) || maxLeadCapacity < -1) {
+      toast({ title: "Invalid capacity", description: "Enter -1 for unlimited or a whole number of leads.", variant: "destructive" as any });
+      return;
+    }
     const data: {
       userId?: string;
       userType?: (typeof MEMBER_USER_TYPES)[number];
       activeMember?: boolean;
       isAvailable?: boolean;
       isWorking?: boolean;
+      weekOff?: boolean;
+      maxLeadCapacity?: number;
     } = {};
-      if (draftUserId !== member.user.id) data.userId = draftUserId;
-      if (draftUserType !== member.userType) data.userType = draftUserType;
-      if (draftActiveMember !== member.activeMember) data.activeMember = draftActiveMember;
-      if (draftAvailable !== member.isAvailable) data.isAvailable = draftAvailable;
-      if (draftWorking !== member.isWorking) data.isWorking = draftWorking;
-      if (!Object.keys(data).length) {
-        setEditing(false);
-        return;
-      }
+    if (draftUserId !== member.user.id) data.userId = draftUserId;
+    if (draftUserType !== member.userType) data.userType = draftUserType;
+    if (draftActiveMember !== member.activeMember) data.activeMember = draftActiveMember;
+    if (draftAvailable !== member.isAvailable) data.isAvailable = draftAvailable;
+    if (draftWorking !== member.isWorking) data.isWorking = draftWorking;
+    if (draftWeekOff !== member.weekOff) data.weekOff = draftWeekOff;
+    if (maxLeadCapacity !== Number(member.maxLeadCapacity ?? -1)) data.maxLeadCapacity = maxLeadCapacity;
+    if (!Object.keys(data).length) {
+      setEditing(false);
+      return;
+    }
     try {
       setSaving(true);
       await rrQueueApi.updateMember(params.id, params.memberId, data);
@@ -103,6 +115,8 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
     setDraftActiveMember(Boolean(member.activeMember));
     setDraftAvailable(Boolean(member.isAvailable));
     setDraftWorking(Boolean(member.isWorking));
+    setDraftWeekOff(Boolean(member.weekOff));
+    setDraftMaxLeadCapacity(String(member.maxLeadCapacity ?? -1));
     setEditing(true);
   };
   const cancelEditing = () => {
@@ -111,6 +125,8 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
     setDraftActiveMember(Boolean(member.activeMember));
     setDraftAvailable(Boolean(member.isAvailable));
     setDraftWorking(Boolean(member.isWorking));
+    setDraftWeekOff(Boolean(member.weekOff));
+    setDraftMaxLeadCapacity(String(member.maxLeadCapacity ?? -1));
     setEditing(false);
   };
 
@@ -151,13 +167,27 @@ export default function RRMemberDetailsPage({ params }: { params: { id: string; 
                   <div>{userName}<span className="ml-2 text-muted-foreground">{member.user.email}</span></div>
                 </DetailRow>
                 <DetailRow label="Created">{displayDate(member.createdAt)}</DetailRow>
-                <DetailRow label="User Type" editing={editing} editor={<select id="rrmember-edit-user-type" aria-label="User Type" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={draftUserType} onChange={(event) => { const value = event.target.value as (typeof MEMBER_USER_TYPES)[number]; setDraftUserType(value); const nextUser = users.find((user) => user.id === draftUserId && user.isActive && MEMBER_PROFILE_NAMES[value].includes(user.profile?.name?.toLowerCase())); if (!nextUser && draftUserId !== member.user.id) setDraftUserId(""); }}>{MEMBER_USER_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>}>{member.userType}</DetailRow>
+                <DetailRow label="User Type" editing={editing} editor={<select id="rrmember-edit-user-type" aria-label="User Type" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={draftUserType} onChange={(event) => { const value = event.target.value as (typeof MEMBER_USER_TYPES)[number]; setDraftUserType(value); if (!matchesSelectedType(draftUserId, value)) setDraftUserId(""); }}>{MEMBER_USER_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>}>{member.userType}</DetailRow>
               </div>
               <div>
                 <DetailRow label="No of New Leads">{member.noOfNewLeads}</DetailRow>
                 <DetailRow label="Leads Owned">{member.leadsOwned}</DetailRow>
                 <DetailRow label="Last Assigned">{displayDate(member.lastAssignedAt)}</DetailRow>
                 <DetailRow label="Last Modified">{displayDate(member.updatedAt)}</DetailRow>
+                <DetailRow
+                  label="Week Off"
+                  editing={editing}
+                  editor={<input aria-label="Week Off" type="checkbox" checked={draftWeekOff} onChange={(event) => setDraftWeekOff(event.target.checked)} className="h-4 w-4" />}
+                >
+                  <Badge variant={member.weekOff ? "secondary" : "default"}>{member.weekOff ? "Yes" : "No"}</Badge>
+                </DetailRow>
+                <DetailRow
+                  label="Max Lead Capacity"
+                  editing={editing}
+                  editor={<input aria-label="Max Lead Capacity" type="number" min={-1} step={1} value={draftMaxLeadCapacity} onChange={(event) => setDraftMaxLeadCapacity(event.target.value)} className="h-10 w-full rounded-md border bg-background px-3 text-sm" />}
+                >
+                  {Number(member.maxLeadCapacity ?? -1) < 0 ? "Unlimited" : member.maxLeadCapacity}
+                </DetailRow>
                 <DetailRow
                   label="Active Member"
                   editing={editing}

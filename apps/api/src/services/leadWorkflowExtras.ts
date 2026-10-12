@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '@dct-crm/db';
-import { getCRMDayBounds } from '@dct-crm/shared';
 import { canTransitionStatus } from './workflow';
+import { tagLeadFollowUpEvents, tagLeadSiteVisitEvents } from './leadEventTagging';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
@@ -72,95 +72,96 @@ export async function getNextSiteVisitNumberDefault(tenantId: string): Promise<s
   return getNextSiteVisitNumber(prisma, tenantId);
 }
 
-export const AUTO_CANCEL_REASON =
-  'Automatically cancelled: scheduled visit date passed without completion.';
+export const AUTO_MISSED_REASON = 'Automatically marked missed because the scheduled visit time passed without completion.';
 
-/**
- * Overdue Site Visit normalization (read-time, backend, deterministic).
- *
- * A visit with status SCHEDULED whose scheduled date is strictly before
- * today in the CRM business timezone (Asia/Kolkata) and that was neither
- * completed nor manually cancelled is auto-cancelled with a system reason.
- * COMPLETED and already-CANCELLED visits are never touched. Mirrors the
- * existing manual-cancel workflow for the linked lead (SITE_VISIT_SCHEDULED
- * → PROSPECT when no other scheduled visit remains), with SYSTEM audit
- * entries (userId null → displayed as "System").
- */
 export async function normalizeOverdueSiteVisits(tenantId: string): Promise<void> {
-  const { start } = getCRMDayBounds();
+  const now = new Date();
   const overdue = await prisma.siteVisit.findMany({
-    where: { tenantId, status: 'SCHEDULED', scheduledAt: { lt: start } },
+    where: { tenantId, status: 'SCHEDULED', scheduledAt: { lte: now } },
     select: {
       id: true,
       leadId: true,
       scheduledAt: true,
-      projectId: true,
-      lead: { select: { id: true, status: true } },
     },
   });
   if (overdue.length === 0) return;
 
   await prisma.$transaction(async (tx) => {
     for (const sv of overdue) {
-      const cancelledAt = new Date();
+      const missedAt = new Date();
       const updated = await tx.siteVisit.updateMany({
         where: { id: sv.id, status: 'SCHEDULED' },
         data: {
-          status: 'CANCELLED',
-          cancellationReason: AUTO_CANCEL_REASON,
-          cancelledAt,
-          cancelledById: null,
+          status: 'MISSED',
+          missedAt,
         },
       });
-      if (updated.count === 0) continue; // another request already normalized it
-
-      if (sv.lead?.status === 'SITE_VISIT_SCHEDULED') {
-        const otherScheduled = await tx.siteVisit.count({
-          where: { tenantId, leadId: sv.leadId, status: 'SCHEDULED', id: { not: sv.id } },
-        });
-        if (otherScheduled === 0) {
-          await tx.lead.update({
-            where: { id: sv.leadId },
-            data: { status: 'PROSPECT' },
-          });
-          await tx.auditLog.create({
-            data: {
-              tenantId,
-              userId: null,
-              leadId: sv.leadId,
-              action: 'SITE_VISIT_CANCELLED',
-              objectType: 'Lead',
-              objectId: sv.leadId,
-              oldValues: { status: 'SITE_VISIT_SCHEDULED' },
-              newValues: {
-                status: 'PROSPECT',
-                siteVisitId: sv.id,
-                reason: AUTO_CANCEL_REASON,
-                source: 'SYSTEM',
-              },
-            },
-          });
-        }
-      }
+      if (updated.count === 0) continue;
+      await tagLeadSiteVisitEvents(tx, {
+        tenantId,
+        leadId: sv.leadId,
+      });
 
       await tx.auditLog.create({
         data: {
           tenantId,
           userId: null,
           leadId: sv.leadId,
-          action: 'SITE_VISIT_CANCELLED',
+          action: 'SITE_VISIT_MISSED',
           objectType: 'SiteVisit',
           objectId: sv.id,
           oldValues: { status: 'SCHEDULED', scheduledAt: sv.scheduledAt.toISOString() },
           newValues: {
-            status: 'CANCELLED',
-            cancellationReason: AUTO_CANCEL_REASON,
-            cancelledAt: cancelledAt.toISOString(),
-            reason: AUTO_CANCEL_REASON,
+            status: 'MISSED',
+            missedAt: missedAt.toISOString(),
+            reason: AUTO_MISSED_REASON,
             source: 'SYSTEM',
           },
         },
       });
     }
+
   });
+}
+
+export async function normalizeOverdueFollowUps(tenantId: string): Promise<void> {
+  const now = new Date();
+  const overdue = await prisma.followUp.findMany({
+    where: { tenantId, isCompleted: false, isMissed: false, dueDate: { lte: now } },
+    select: { id: true, leadId: true, dueDate: true },
+  });
+  if (overdue.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    for (const followUp of overdue) {
+      const missedAt = new Date();
+      const updated = await tx.followUp.updateMany({
+        where: { id: followUp.id, isCompleted: false, isMissed: false },
+        data: { isMissed: true, missedAt },
+      });
+      if (updated.count === 0) continue;
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId: null,
+          leadId: followUp.leadId || undefined,
+          action: 'FOLLOW_UP_MISSED',
+          objectType: 'FollowUp',
+          objectId: followUp.id,
+          oldValues: { isCompleted: false, isMissed: false, dueDate: followUp.dueDate.toISOString() },
+          newValues: { isCompleted: false, isMissed: true, missedAt: missedAt.toISOString(), source: 'SYSTEM' },
+        },
+      });
+      if (followUp.leadId) await tagLeadFollowUpEvents(tx, tenantId, followUp.leadId);
+    }
+  });
+}
+
+export async function normalizeOverdueScheduledItems(): Promise<void> {
+  const tenants = await prisma.tenant.findMany({ select: { id: true } });
+  for (const tenant of tenants) {
+    await normalizeOverdueFollowUps(tenant.id);
+    await normalizeOverdueSiteVisits(tenant.id);
+  }
 }

@@ -63,10 +63,15 @@ const PERMISSIONS = [
   { name: 'PAYMENT_UPDATE', label: 'Update Payment', module: 'PAYMENT', action: 'UPDATE' },
   { name: 'PAYMENT_VERIFY', label: 'Verify Payment', module: 'PAYMENT', action: 'VERIFY' },
   { name: 'PAYMENT_APPROVE', label: 'Approve Payment', module: 'PAYMENT', action: 'APPROVE' },
+  { name: 'PAYMENT_ALLOCATE', label: 'Allocate Payment', module: 'PAYMENT', action: 'ALLOCATE' },
 
   // FINANCE
   { name: 'FINANCE_READ', label: 'View Finance', module: 'FINANCE', action: 'READ' },
   { name: 'FINANCE_MANAGE', label: 'Manage Finance', module: 'FINANCE', action: 'MANAGE' },
+  { name: 'INSTALLMENT_READ', label: 'View Installments', module: 'INSTALLMENT', action: 'READ' },
+  { name: 'RECEIPT_READ', label: 'View Receipts', module: 'RECEIPT', action: 'READ' },
+  { name: 'RECEIPT_CREATE', label: 'Issue Receipts', module: 'RECEIPT', action: 'CREATE' },
+  { name: 'RECEIPT_CANCEL', label: 'Cancel Receipts', module: 'RECEIPT', action: 'CANCEL' },
 
   // REPORT
   { name: 'REPORT_VIEW', label: 'View Reports', module: 'REPORT', action: 'VIEW' },

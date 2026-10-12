@@ -11,7 +11,7 @@ import {
   getLeadRecordScope,
   leadScopeClause,
 } from '../services/recordAccess';
-import { getNextSiteVisitNumber, normalizeOverdueSiteVisits } from '../services/leadWorkflowExtras';
+import { getNextSiteVisitNumber, normalizeOverdueFollowUps, normalizeOverdueSiteVisits } from '../services/leadWorkflowExtras';
 import { validateObjectCustomFields } from '../services/customFieldValidation';
 import {
   assignLeadToProjectRoundRobinInTransaction,
@@ -19,6 +19,7 @@ import {
   assignCompletedSiteVisitToSalesInTransaction,
   selectNextProjectRRMemberInTransaction,
   findApplicableRRQueue,
+  rrQueueCriteriaForLead,
   hasLeadAssignmentRelevantChanges,
   isLeadEligibleForAutoAssignment,
   RoundRobinAssignmentService,
@@ -26,9 +27,18 @@ import {
 import { changeLeadOwner, getEligibleLeadOwners } from '../services/leadOwnerChange';
 import { processLeadEnquiry, sourceEnumValue } from '../services/enquiryProcessing';
 import { getLeadEnquiries } from '../services/enquiryService';
+import { mergeOperationalLeadCustomFields } from '../services/leadEventTagging';
+import {
+  findLeadDuplicates,
+  validateLeadContactInput,
+} from '../services/leadDuplicateDetection';
 import { z } from 'zod';
 
 const router = Router();
+const pushToSvcRequestSchema = z.object({
+  reason: z.string().trim().min(1, 'Reason/note is required for status change')
+    .max(2000, 'Reason/note must be 2000 characters or fewer'),
+});
 
 router.use(authenticate);
 
@@ -39,6 +49,49 @@ router.use(authenticate);
  */
 function leadIdScope(req: AuthRequest): { tenantId?: string } {
   return req.user!.isSuperAdmin ? {} : { tenantId: req.tenantId! };
+}
+
+async function getAccessibleDuplicateLeadIds(req: AuthRequest, leadIds: string[]): Promise<string[]> {
+  const candidates = await prisma.lead.findMany({
+    where: { id: { in: leadIds }, ...leadIdScope(req) },
+    select: { id: true, tenantId: true, ownerId: true, creatorId: true },
+  });
+  const accessible = await Promise.all(candidates.map(async (lead) =>
+    (await canAccessLead(req.user!, lead)) ? lead.id : null,
+  ));
+  return accessible.filter((id): id is string => Boolean(id));
+}
+
+const duplicatePreviewSchema = z.object({
+  phone: z.string().trim().max(64).optional(),
+  mobile: z.string().trim().max(64).optional(),
+  secondaryPhone: z.string().trim().max(64).optional(),
+  tertiaryPhone: z.string().trim().max(64).optional(),
+  countryCode: z.string().trim().max(8).optional(),
+  secondaryCountryCode: z.string().trim().max(8).optional(),
+  tertiaryCountryCode: z.string().trim().max(8).optional(),
+  email: z.string().trim().max(254).optional(),
+  secondaryEmail: z.string().trim().max(254).optional(),
+  tertiaryEmail: z.string().trim().max(254).optional(),
+});
+
+function duplicateContactInput(
+  input: z.infer<typeof duplicatePreviewSchema>,
+) {
+  const countryCode = input.countryCode || '91';
+  return {
+    phones: [
+      { field: 'phone', value: input.phone, countryCode },
+      { field: 'mobile', value: input.mobile, countryCode },
+      { field: 'secondaryPhone', value: input.secondaryPhone, countryCode: input.secondaryCountryCode || countryCode },
+      { field: 'tertiaryPhone', value: input.tertiaryPhone, countryCode: input.tertiaryCountryCode || input.secondaryCountryCode || countryCode },
+    ],
+    emails: [
+      { field: 'email', value: input.email },
+      { field: 'secondaryEmail', value: input.secondaryEmail },
+      { field: 'tertiaryEmail', value: input.tertiaryEmail },
+    ],
+  };
 }
 
 async function validateLeadCustomFields(
@@ -392,8 +445,11 @@ router.post('/:id/enquiries', authorize('Enquiry', 'create'), async (req: AuthRe
       tertiaryPhone: z.string().trim().max(64).optional(),
       countryCode: z.string().trim().max(8).optional(),
       secondaryCountryCode: z.string().trim().max(8).optional(),
+      tertiaryCountryCode: z.string().trim().max(8).optional(),
       email: z.string().trim().email().optional().or(z.literal('')),
       secondaryEmail: z.string().trim().email().optional().or(z.literal('')),
+      tertiaryEmail: z.string().trim().email().optional().or(z.literal('')),
+      originalSubmissionId: z.string().trim().min(1).max(200).optional(),
       medium: z.string().trim().max(120).optional(),
       description: z.string().trim().max(5000).optional(),
       channelPartner: z.string().trim().max(160).optional(),
@@ -447,8 +503,11 @@ router.post('/:id/enquiries', authorize('Enquiry', 'create'), async (req: AuthRe
         secondaryPhone: payload.secondaryPhone,
         tertiaryPhone: payload.tertiaryPhone,
         secondaryCountryCode: payload.secondaryCountryCode,
+        tertiaryCountryCode: payload.tertiaryCountryCode,
         countryCode: payload.countryCode,
         secondaryEmail: payload.secondaryEmail,
+        tertiaryEmail: payload.tertiaryEmail,
+        originalSubmissionId: payload.originalSubmissionId || req.get('Idempotency-Key') || undefined,
         medium: payload.medium,
         description: payload.description,
         channelPartner: payload.channelPartner,
@@ -464,17 +523,19 @@ router.post('/:id/enquiries', authorize('Enquiry', 'create'), async (req: AuthRe
         : undefined,
     });
     if (result.action === 'DUPLICATE_CONFLICT') {
+      const leadIds = await getAccessibleDuplicateLeadIds(req, result.leadIds);
       return res.status(409).json({
         success: false,
         action: result.action,
-        leadIds: result.leadIds,
+        leadIds,
         error: 'This phone number matches multiple existing Leads. Ask an administrator to resolve the duplicate records.',
       });
     }
     if (result.action === 'LEAD_MISMATCH') {
+      const leadIds = await getAccessibleDuplicateLeadIds(req, result.leadIds);
       return res.status(409).json({
         success: false,
-        leadIds: result.leadIds,
+        leadIds,
         error: 'The enquiry phone number matches a different Lead. Create this enquiry from that Lead instead.',
       });
     }
@@ -493,7 +554,7 @@ router.post('/:id/enquiries', authorize('Enquiry', 'create'), async (req: AuthRe
       return res.status(409).json({ success: false, error: 'No eligible Pre Sales round-robin member is configured for this project.' });
     }
     if (error?.message === 'SVC_QUEUE_NOT_CONFIGURED' || error?.message === 'NO_ELIGIBLE_SVC_MEMBER') {
-      return res.status(409).json({ success: false, error: 'No eligible SVC owner is configured for this project.' });
+      return res.status(409).json({ success: false, error: 'No eligible SVC member is available in a round-robin queue matching this project and lead source.' });
     }
     if (error?.message === 'PHONE_REQUIRED') {
       return res.status(400).json({ success: false, error: 'A phone number is required' });
@@ -505,6 +566,7 @@ router.post('/:id/enquiries', authorize('Enquiry', 'create'), async (req: AuthRe
 
 router.get('/:id', authorize('Lead', 'read'), async (req: AuthRequest, res: Response) => {
   try {
+    await normalizeOverdueFollowUps(req.user!.tenantId);
     await normalizeOverdueSiteVisits(req.user!.tenantId);
     const lead = await prisma.lead.findFirst({
       where: { id: req.params.id, ...leadIdScope(req) },
@@ -655,6 +717,7 @@ router.post('/:id/convert', authorize('Opportunity', 'create'), async (req: Auth
         tenantId,
         projectId,
         userType: 'CRM',
+        criteria: rrQueueCriteriaForLead(lead),
       });
       const opportunityOwnerId = crmAssignment.member.userId;
 
@@ -740,7 +803,7 @@ router.post('/:id/convert', authorize('Opportunity', 'create'), async (req: Auth
       return res.status(409).json({ success: false, error: 'A project is required to assign this Opportunity to a CRM round robin.' });
     }
     if (error.message === 'RR_QUEUE_NOT_CONFIGURED:CRM' || error.message === 'NO_ELIGIBLE_RR_MEMBER:CRM') {
-      return res.status(409).json({ success: false, error: 'No eligible CRM round-robin member is configured for this project.' });
+      return res.status(409).json({ success: false, error: 'No eligible CRM member is available in a round-robin queue matching this project and lead source.' });
     }
     const errors: Record<string, [number, string]> = {
       LEAD_NOT_FOUND: [404, 'Lead not found'],
@@ -759,6 +822,81 @@ router.post('/:id/convert', authorize('Opportunity', 'create'), async (req: Auth
   }
 });
 
+router.post('/duplicates', authorize('Lead', 'create'), async (req: AuthRequest, res: Response) => {
+  try {
+    const parsed = duplicatePreviewSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid lead contact details',
+        fieldErrors: parsed.error.issues.map((issue) => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+        })),
+      });
+    }
+    const contacts = duplicateContactInput(parsed.data);
+    const validationErrors = validateLeadContactInput(contacts);
+    if (validationErrors.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please correct the highlighted contact details.',
+        fieldErrors: validationErrors,
+      });
+    }
+    for (const email of contacts.emails) {
+      if (email.value?.trim() && !z.string().trim().email().safeParse(email.value).success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Please correct the highlighted contact details.',
+          fieldErrors: [{ field: email.field, message: 'Enter a valid email address.' }],
+        });
+      }
+    }
+    const matches = await prisma.$transaction((tx) =>
+      findLeadDuplicates(tx, req.tenantId!, contacts),
+    );
+    const candidates: Array<{
+      id: string;
+      leadNumber: string | null;
+      name: string;
+      projectName: string | null;
+      matchedFields: string[];
+    }> = [];
+    for (const match of matches) {
+      const accessRecord = await prisma.lead.findFirst({
+        where: { id: match.lead.id, ...leadIdScope(req) },
+        select: { id: true, tenantId: true, ownerId: true, creatorId: true },
+      });
+      if (!accessRecord || !(await canAccessLead(req.user!, accessRecord))) continue;
+      const related = await prisma.lead.findUnique({
+        where: { id: match.lead.id },
+        select: {
+          owner: { select: { firstName: true, lastName: true } },
+          project: { select: { name: true } },
+        },
+      });
+      candidates.push({
+        id: match.lead.id,
+        leadNumber: match.lead.leadNumber,
+        name: [match.lead.firstName, match.lead.lastName].filter(Boolean).join(' '),
+        projectName: related?.project?.name || null,
+        matchedFields: match.matchedFields,
+      });
+    }
+    return res.json({
+      success: true,
+      hasDuplicates: matches.length > 0,
+      ambiguous: matches.length > 1 || matches.some((match) => match.ambiguous),
+      inaccessibleMatches: matches.length > candidates.length,
+      candidates,
+    });
+  } catch (error) {
+    console.error('Lead duplicate preview failed:', error);
+    return res.status(500).json({ success: false, error: 'Unable to check for duplicate Leads' });
+  }
+});
+
 router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Response) => {
   try {
     const {
@@ -771,8 +909,12 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       secondaryPhone,
       tertiaryPhone,
       secondaryEmail,
+      tertiaryEmail,
+      originalSubmissionId,
       countryCode,
       secondaryCountryCode,
+      tertiaryCountryCode,
+      linkToLeadId,
       medium,
       enquiryDescription,
       channelPartner,
@@ -790,9 +932,13 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       salesUserId: z.string().trim().optional(),
       secondaryPhone: z.string().trim().max(64).optional(),
       tertiaryPhone: z.string().trim().max(64).optional(),
-      secondaryEmail: z.string().trim().email().optional(),
-      countryCode: z.string().trim().max(8).optional(),
-      secondaryCountryCode: z.string().trim().max(8).optional(),
+      secondaryEmail: z.string().trim().email().optional().or(z.literal('')),
+      tertiaryEmail: z.string().trim().email().optional().or(z.literal('')),
+      originalSubmissionId: z.string().trim().min(1).max(200).optional(),
+      countryCode: z.string().trim().regex(/^\+?\d{1,3}$/, 'Enter a valid primary country calling code').optional(),
+      secondaryCountryCode: z.string().trim().regex(/^\+?\d{1,3}$/, 'Enter a valid secondary country calling code').optional(),
+      tertiaryCountryCode: z.string().trim().regex(/^\+?\d{1,3}$/, 'Enter a valid tertiary country calling code').optional(),
+      linkToLeadId: z.string().trim().min(1).optional(),
       medium: z.string().trim().max(120).optional(),
       enquiryDescription: z.string().trim().max(5000).optional(),
       channelPartner: z.string().trim().max(160).optional(),
@@ -805,18 +951,52 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       }).optional(),
     }).parse({
       subSource, campaignId, campaign, subCampaignId, subCampaign, salesUserId,
-      secondaryPhone, tertiaryPhone, secondaryEmail, countryCode,
-      secondaryCountryCode, medium, enquiryDescription, channelPartner,
+      secondaryPhone, tertiaryPhone, secondaryEmail, tertiaryEmail, originalSubmissionId, countryCode,
+      secondaryCountryCode, tertiaryCountryCode, linkToLeadId, medium, enquiryDescription, channelPartner,
       enquiryDate, enquiryDetails, siteVisit,
     });
+    const creationCustomFields = leadInput.customFields && typeof leadInput.customFields === 'object' && !Array.isArray(leadInput.customFields)
+      ? leadInput.customFields as Record<string, unknown>
+      : {};
+    if (Object.prototype.hasOwnProperty.call(creationCustomFields, 'score')) {
+      return res.status(400).json({ success: false, error: 'Score is read-only' });
+    }
+    for (const fieldName of ['source', 'status', 'rating', 'description'] as const) {
+      if (leadInput[fieldName] === undefined && creationCustomFields[fieldName] !== undefined) {
+        leadInput[fieldName] = creationCustomFields[fieldName];
+      }
+    }
     const incomingSource = typeof leadInput.source === 'string' ? leadInput.source : 'OTHER';
     const data = leadCreateSchema.parse({
       ...leadInput,
       source: sourceEnumValue(incomingSource),
     });
+    const contacts = duplicateContactInput({
+      phone: data.phone,
+      mobile: data.mobile || undefined,
+      secondaryPhone: metadata.secondaryPhone,
+      tertiaryPhone: metadata.tertiaryPhone,
+      countryCode: metadata.countryCode,
+      secondaryCountryCode: metadata.secondaryCountryCode,
+      tertiaryCountryCode: metadata.tertiaryCountryCode,
+      email: data.email,
+      secondaryEmail: metadata.secondaryEmail,
+      tertiaryEmail: metadata.tertiaryEmail,
+    });
+    const validationErrors = validateLeadContactInput(contacts);
+    if (validationErrors.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please correct the highlighted contact details.',
+        fieldErrors: validationErrors,
+      });
+    }
+    const customFieldsToValidate = Object.fromEntries(
+      Object.entries(data.customFields || {}).filter(([name]) => name !== 'score'),
+    );
     const customFieldError = await validateLeadCustomFields(
       req.tenantId!,
-      data.customFields || {},
+      customFieldsToValidate,
       true,
     );
     if (customFieldError) {
@@ -844,6 +1024,7 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       userId: req.user!.id,
       salesUserId: metadata.salesUserId,
       profileName: req.user!.profileName,
+      expectedLeadId: metadata.linkToLeadId,
       lead: data,
       enquiry: {
         source: incomingSource,
@@ -855,8 +1036,11 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
         secondaryPhone: metadata.secondaryPhone,
         tertiaryPhone: metadata.tertiaryPhone,
         secondaryEmail: metadata.secondaryEmail,
+        tertiaryEmail: metadata.tertiaryEmail,
+        originalSubmissionId: metadata.originalSubmissionId || req.get('Idempotency-Key') || undefined,
         countryCode: metadata.countryCode,
         secondaryCountryCode: metadata.secondaryCountryCode,
+        tertiaryCountryCode: metadata.tertiaryCountryCode,
         medium: metadata.medium,
         description: metadata.enquiryDescription,
         channelPartner: metadata.channelPartner,
@@ -872,20 +1056,45 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
         : undefined,
     });
     if (result.action === 'DUPLICATE_CONFLICT') {
+      const leadIds = await getAccessibleDuplicateLeadIds(req, result.leadIds);
       return res.status(409).json({
         success: false,
         action: result.action,
-        leadIds: result.leadIds,
+        leadIds,
+        candidates: leadIds.map((id) => ({ id })),
         error: 'This phone number matches multiple existing Leads. Ask an administrator to resolve the duplicate records.',
       });
+    }
+    if (result.action === 'LEAD_MISMATCH') {
+      return res.status(409).json({
+        success: false,
+        action: result.action,
+        error: 'The duplicate match changed while this enquiry was being submitted. Check for duplicates again.',
+      });
+    }
+    let canReadMatchedLead = true;
+    if (result.action !== 'NEW_LEAD') {
+      const matchedLead = await prisma.lead.findFirst({
+        where: { id: result.leadId, ...leadIdScope(req) },
+        select: { id: true, tenantId: true, ownerId: true, creatorId: true },
+      });
+      canReadMatchedLead = Boolean(matchedLead && await canAccessLead(req.user!, matchedLead));
     }
     res.status(result.action === 'NEW_LEAD' ? 201 : 200).json({
       success: true,
       action: result.action,
-      leadId: result.leadId,
-      data: result.lead
+      leadId: canReadMatchedLead ? result.leadId : null,
+      duplicate: result.action === 'NEW_LEAD'
+        ? undefined
+        : {
+            linked: true,
+            leadId: canReadMatchedLead ? result.leadId : null,
+            visibilityRestricted: !canReadMatchedLead,
+            enquiryId: result.enquiry?.id,
+          },
+      data: result.lead && canReadMatchedLead
         ? { ...result.lead, ...(result.assignmentWarning ? { assignmentWarning: result.assignmentWarning } : {}) }
-        : result.lead,
+        : null,
       validationDays: result.validationDays,
       daysDifference: result.daysDifference,
       assignment: result.assignment,
@@ -894,6 +1103,8 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
       ...(result.assignmentWarning ? { warning: result.assignmentWarning } : {}),
       message: result.action === 'NEW_LEAD'
         ? 'New lead created and assigned'
+        : result.action === 'RE_OPENED'
+          ? 'Existing lost lead reopened and linked successfully'
         : result.action === 'RE_ENGAGED'
           ? 'Existing lost lead re-engaged successfully'
           : result.action === 'OUTSIDE_REENGAGEMENT_WINDOW'
@@ -902,7 +1113,21 @@ router.post('/', authorize('Lead', 'create'), async (req: AuthRequest, res: Resp
     });
   } catch (error: any) {
     if (error.name === 'ZodError') {
-      return res.status(400).json({ success: false, error: error.errors[0].message });
+      return res.status(400).json({
+        success: false,
+        error: error.errors[0].message,
+        fieldErrors: error.errors.map((issue: z.ZodIssue) => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+        })),
+      });
+    }
+    if (error?.message === 'LEAD_CONTACT_VALIDATION') {
+      return res.status(400).json({
+        success: false,
+        error: 'Please correct the highlighted contact details.',
+        fieldErrors: error.validationErrors,
+      });
     }
     if (isPhoneUniqueViolation(error)) {
       return res.status(409).json({ success: false, action: 'DUPLICATE_CONFLICT', error: PHONE_DUPLICATE_ERROR });
@@ -942,6 +1167,18 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
     }
 
     const bodyData = { ...req.body };
+    const requestedCustomFields = bodyData.customFields && typeof bodyData.customFields === 'object' && !Array.isArray(bodyData.customFields)
+      ? bodyData.customFields as Record<string, unknown>
+      : {};
+    const operationalFieldNames = ['source', 'status', 'rating', 'description', 'score'] as const;
+    if (Object.prototype.hasOwnProperty.call(requestedCustomFields, 'score')) {
+      return res.status(400).json({ success: false, error: 'Score is read-only' });
+    }
+    for (const fieldName of operationalFieldNames) {
+      if (bodyData[fieldName] === undefined && requestedCustomFields[fieldName] !== undefined) {
+        bodyData[fieldName] = requestedCustomFields[fieldName];
+      }
+    }
     delete bodyData.leadNumber;
     const reason =
       typeof bodyData.reason === 'string' && bodyData.reason.trim()
@@ -951,9 +1188,12 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
     const data = leadUpdateSchema.parse(bodyData);
 
     if (data.customFields) {
+      const fieldsToValidate = Object.fromEntries(
+        Object.entries(data.customFields).filter(([name]) => name !== 'score'),
+      );
       const customFieldError = await validateLeadCustomFields(
         existingLead.tenantId,
-        data.customFields,
+        fieldsToValidate,
         false,
       );
       if (customFieldError) {
@@ -966,6 +1206,19 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
           : {}),
         ...data.customFields,
       };
+    }
+    const operationalFieldUpdates = {
+      ...(data.source !== undefined ? { source: data.source } : {}),
+      ...(data.status !== undefined ? { status: data.status } : {}),
+      ...(data.rating !== undefined ? { rating: data.rating } : {}),
+      ...(data.description !== undefined ? { description: data.description } : {}),
+      ...(data.score !== undefined ? { score: data.score } : {}),
+    };
+    if (Object.keys(operationalFieldUpdates).length) {
+      data.customFields = mergeOperationalLeadCustomFields(
+        data.customFields || existingLead.customFields,
+        operationalFieldUpdates,
+      );
     }
 
     if (data.status && !isValidStatus(data.status)) {
@@ -1143,7 +1396,7 @@ router.put('/:id', authorize('Lead', 'edit'), async (req: AuthRequest, res: Resp
       return res.status(409).json({ success: false, error: 'A project is required for this round-robin assignment.' });
     }
     if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Recovery' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Recovery') {
-      return res.status(409).json({ success: false, error: 'No eligible Recovery round-robin member is configured for this project.' });
+      return res.status(409).json({ success: false, error: 'No eligible Recovery member is available in a round-robin queue matching this project and lead source.' });
     }
     if (error?.message === 'COMPLETED_SITE_VISIT_REQUIRED') {
       return res.status(409).json({ success: false, error: 'A completed site visit is required before assigning Sales.' });
@@ -1261,10 +1514,11 @@ router.delete('/:id', authorize('Lead', 'delete'), async (req: AuthRequest, res:
 
 router.post('/:id/push-to-svc', authorize('Lead', 'edit'), async (req: AuthRequest, res: Response) => {
   try {
-    const { reason } = req.body;
-    if (!reason || !reason.trim()) {
-      return res.status(400).json({ success: false, error: 'Reason/note is required for status change' });
+    const parsedBody = pushToSvcRequestSchema.safeParse(req.body);
+    if (!parsedBody.success) {
+      return res.status(400).json({ success: false, error: parsedBody.error.issues[0]?.message || 'Invalid request body' });
     }
+    const { reason } = parsedBody.data;
 
     const lead = await prisma.lead.findFirst({
       where: { id: req.params.id, ...leadIdScope(req) },
@@ -1334,19 +1588,33 @@ router.post('/:id/push-to-svc', authorize('Lead', 'edit'), async (req: AuthReque
     if (error?.message === 'RR_PROJECT_REQUIRED') {
       return res.status(409).json({ success: false, error: 'A project is required to push this lead to SVC.' });
     }
-    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:SVC' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:SVC') {
-      return res.status(409).json({ success: false, error: 'No eligible SVC round-robin member is configured for this project.' });
+    if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:SVC') {
+      return res.status(409).json({ success: false, error: 'No active SVC round-robin queue matches this project and lead source.' });
+    }
+    if (error?.message === 'NO_ELIGIBLE_RR_MEMBER:SVC') {
+      return res.status(409).json({ success: false, error: 'The matching SVC round-robin queue has no active, available SVC member.' });
     }
     console.error('Push to SVC error:', error);
     res.status(500).json({ success: false, error: 'Failed to push lead to SVC' });
   }
 });
 
-router.post('/:id/move-to-recovery', authorize('Lead', 'edit'), async (req: AuthRequest, res: Response) => {
+router.post('/:id/move-to-recovery', async (req: AuthRequest, res: Response) => {
   try {
     const { recoveryReason, note } = req.body;
     if (!recoveryReason || !recoveryReason.trim()) {
       return res.status(400).json({ success: false, error: 'Recovery reason is required' });
+    }
+
+    const permissions = req.user!.isSuperAdmin
+      ? []
+      : await EffectivePermissionService.getEffectivePermissionsCached(req.user!, req.user!.id);
+    const canMoveToRecovery = req.user!.isSuperAdmin ||
+      EffectivePermissionService.hasPermissionIn(permissions, 'LEAD_UPDATE') ||
+      EffectivePermissionService.hasPermissionIn(permissions, 'SITE_VISIT_UPDATE') ||
+      EffectivePermissionService.hasPermissionIn(permissions, 'SITE_VISIT_CREATE');
+    if (!canMoveToRecovery) {
+      return res.status(403).json({ success: false, error: 'Insufficient permissions to move this lead to Recovery.' });
     }
 
     const lead = await prisma.lead.findFirst({
@@ -1362,16 +1630,8 @@ router.post('/:id/move-to-recovery', authorize('Lead', 'edit'), async (req: Auth
       return res.status(403).json({ success: false, error: 'You do not have access to this lead' });
     }
 
-    if (lead.status !== 'INCOMING' && lead.status !== 'NEW') {
-      return res.status(400).json({ success: false, error: 'Lead must be in New or Incoming status to move to recovery' });
-    }
-
-    const profileName = req.user!.profileName || 'Admin';
-
-    if (profileName !== 'Admin' && profileName !== 'Manager' && profileName !== 'CRM Admin') {
-      if (!canTransitionStatus(profileName, lead.status, 'LOST')) {
-        return res.status(403).json({ success: false, error: 'Not authorized to move this lead to recovery' });
-      }
+    if (lead.status === 'LOST') {
+      return res.status(400).json({ success: false, error: 'Lead is already marked Lost.' });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -1413,7 +1673,7 @@ router.post('/:id/move-to-recovery', authorize('Lead', 'edit'), async (req: Auth
       return res.status(409).json({ success: false, error: 'A project is required to assign this lead to Recovery.' });
     }
     if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Recovery' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Recovery') {
-      return res.status(409).json({ success: false, error: 'No eligible Recovery round-robin member is configured for this project.' });
+      return res.status(409).json({ success: false, error: 'No eligible Recovery member is available in a round-robin queue matching this project and lead source.' });
     }
     console.error('Move to recovery error:', error);
     res.status(500).json({ success: false, error: 'Failed to move lead to recovery' });
@@ -1528,7 +1788,7 @@ router.post('/:id/schedule-site-visit', authorize('Lead', 'edit'), async (req: A
       return res.status(404).json({ success: false, error: 'Project not found' });
     }
     if (error?.message === 'SVC_QUEUE_NOT_CONFIGURED' || error?.message === 'NO_ELIGIBLE_SVC_MEMBER') {
-      return res.status(409).json({ success: false, error: 'No eligible SVC owner is configured for this project.' });
+      return res.status(409).json({ success: false, error: 'No eligible SVC member is available in a round-robin queue matching this project and lead source.' });
     }
     console.error('Schedule site visit error:', error);
     res.status(500).json({ success: false, error: 'Failed to schedule site visit' });
@@ -1643,7 +1903,7 @@ router.put('/:id/status', authorize('Lead', 'edit'), async (req: AuthRequest, re
       return res.status(409).json({ success: false, error: 'A project is required for this round-robin assignment.' });
     }
     if (error?.message === 'RR_QUEUE_NOT_CONFIGURED:Recovery' || error?.message === 'NO_ELIGIBLE_RR_MEMBER:Recovery') {
-      return res.status(409).json({ success: false, error: 'No eligible Recovery round-robin member is configured for this project.' });
+      return res.status(409).json({ success: false, error: 'No eligible Recovery member is available in a round-robin queue matching this project and lead source.' });
     }
     if (error?.message === 'COMPLETED_SITE_VISIT_REQUIRED') {
       return res.status(409).json({ success: false, error: 'A completed site visit is required before assigning Sales.' });

@@ -6,13 +6,13 @@ async function main() {
   `);
   console.log('NULL phones (unchanged legacy):', JSON.stringify(nulls));
 
-  const uniqueIdx = await prisma.$queryRawUnsafe(`
+  const phoneIdx = await prisma.$queryRawUnsafe<Array<{ indexdef: string }>>(`
     SELECT indexdef FROM pg_indexes
-    WHERE tablename = 'Lead' AND indexname = 'Lead_tenantId_phone_key'
+    WHERE tablename = 'Lead' AND indexname = 'Lead_tenantId_phone_idx'
   `);
-  console.log('Unique index:', JSON.stringify(uniqueIdx));
+  console.log('Phone lookup index:', JSON.stringify(phoneIdx));
 
-  // Concurrent same-phone inserts must yield one success + unique violation
+  // Shared phone numbers are allowed; the CRM intake matcher handles review.
   const tenant = await prisma.tenant.findFirstOrThrow();
   const creator = await prisma.user.findFirstOrThrow({
     where: { tenantId: tenant.id },
@@ -36,25 +36,17 @@ async function main() {
   const settled = await Promise.allSettled([make('One'), make('Two')]);
   const ok = settled.filter((s) => s.status === 'fulfilled').length;
   const rejected = settled.filter((s) => s.status === 'rejected');
-  const p2002 = rejected.filter(
-    (s) => (s as PromiseRejectedResult).reason?.code === 'P2002',
-  ).length;
-  console.log('DB concurrent create: ok=', ok, 'rejected=', rejected.length, 'P2002=', p2002);
-
-  const winner = settled.find((s) => s.status === 'fulfilled') as
-    | PromiseFulfilledResult<{ id: string }>
-    | undefined;
-  if (winner) {
-    await prisma.lead.delete({ where: { id: winner.value.id } });
-    console.log('Cleaned race lead', winner.value.id);
+  const createdIds = settled.flatMap((result) =>
+    result.status === 'fulfilled' ? [result.value.id] : [],
+  );
+  if (createdIds.length) {
+    await prisma.lead.deleteMany({ where: { id: { in: createdIds } } });
+    console.log('Cleaned shared-phone test leads', createdIds);
   }
-
-  if (ok !== 1 || p2002 !== 1) {
-    throw new Error(
-      `Expected one success and one P2002, got ok=${ok} p2002=${p2002}`,
-    );
+  if (ok !== 2 || rejected.length !== 0 || phoneIdx.length === 0) {
+    throw new Error(`Expected two Leads to share one phone with a lookup index, got ok=${ok} rejected=${rejected.length}`);
   }
-  console.log('DB concurrent uniqueness OK');
+  console.log('DB shared-phone handling OK');
 }
 
 main()

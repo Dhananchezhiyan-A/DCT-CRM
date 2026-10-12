@@ -52,6 +52,11 @@ router.get('/', authenticate, authorize('Unit', 'read'), async (req: AuthRequest
       ...(projectId && { projectId: projectId as string }),
       ...(type && { type: type as string }),
       ...(status && { status: status as any }),
+      ...(status === 'AVAILABLE' && {
+        bookings: {
+          none: { status: { in: ['PENDING', 'CONFIRMED', 'COMPLETED'] } },
+        },
+      }),
       ...(minPrice && { price: { gte: Number(minPrice) } }),
       ...(maxPrice && { price: { lte: Number(maxPrice) } }),
       ...(minFloor && { floor: { gte: Number(minFloor) } }),
@@ -73,6 +78,11 @@ router.get('/', authenticate, authorize('Unit', 'read'), async (req: AuthRequest
         include: {
           project: { select: { id: true, name: true, address: true } },
           _count: { select: { bookings: true } },
+          bookings: {
+            where: { status: { in: ['PENDING', 'CONFIRMED', 'COMPLETED'] } },
+            select: { id: true },
+            take: 1,
+          },
         },
       }),
       prisma.unit.count({ where }),
@@ -80,7 +90,14 @@ router.get('/', authenticate, authorize('Unit', 'read'), async (req: AuthRequest
 
     const response: PaginatedResponse<typeof units[0]> = {
       success: true,
-      data: units,
+      data: units.map((unit) => {
+        const hasActiveBooking = unit.bookings.length > 0;
+        return {
+          ...unit,
+          bookings: [],
+          status: unit.status === 'AVAILABLE' && hasActiveBooking ? 'BOOKED' : unit.status,
+        };
+      }),
       pagination: {
         page: Number(page),
         limit: Number(limit),
@@ -109,6 +126,43 @@ router.get('/:id', authenticate, authorize('Unit', 'read'), async (req: AuthRequ
           orderBy: { createdAt: 'desc' },
           take: 5,
         },
+        quotationItems: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            quotation: {
+              include: {
+                lead: { select: { id: true, firstName: true, lastName: true } },
+                bookings: {
+                  select: {
+                    id: true,
+                    number: true,
+                    status: true,
+                    payments: {
+                      select: {
+                        id: true,
+                        amount: true,
+                        status: true,
+                        paymentDate: true,
+                        reference: true,
+                        receipt: { select: { id: true, receiptNumber: true, status: true } },
+                      },
+                    },
+                  },
+                },
+                receipts: {
+                  select: {
+                    id: true,
+                    receiptNumber: true,
+                    amount: true,
+                    status: true,
+                    receiptDate: true,
+                  },
+                  orderBy: { receiptDate: 'desc' },
+                },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -116,7 +170,34 @@ router.get('/:id', authenticate, authorize('Unit', 'read'), async (req: AuthRequ
       return res.status(404).json({ success: false, error: 'Unit not found' });
     }
 
-    res.json({ success: true, data: unit });
+    const quotationMap = new Map(unit.quotationItems.map(({ quotation }) => [quotation.id, quotation]));
+    const quotations = [...quotationMap.values()].map((quotation) => {
+      const receivedAmount = quotation.bookings
+        .flatMap((booking) => booking.payments)
+        .filter((payment) => ['VERIFIED', 'COMPLETED'].includes(payment.status) && payment.receipt?.status !== 'CANCELLED')
+        .reduce((sum, payment) => sum + Number(payment.amount), 0);
+      return {
+        ...quotation,
+        receivedAmount,
+        balanceAmount: Math.max(0, Number(quotation.totalAmount) - receivedAmount),
+        paymentProgress: Number(quotation.totalAmount) > 0
+          ? Math.min(100, (receivedAmount / Number(quotation.totalAmount)) * 100)
+          : 0,
+        receipts: quotation.receipts.map((receipt) => ({
+          ...receipt,
+          amount: Number(receipt.amount),
+        })),
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ...unit,
+        quotationItems: undefined,
+        financialSummary: { quotations },
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch unit' });
   }

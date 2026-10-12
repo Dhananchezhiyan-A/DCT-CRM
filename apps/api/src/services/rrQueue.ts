@@ -18,6 +18,22 @@ export function getRoundRobinProfileNames(userType: string): string[] {
   return Object.entries(profiles).find(([type]) => type === userType)?.[1] || [];
 }
 
+export function isEligibleRRQueueMember(member: {
+  activeMember?: boolean;
+  isAvailable?: boolean;
+  isWorking?: boolean;
+  weekOff?: boolean;
+  user?: { isActive?: boolean } | null;
+}): boolean {
+  return Boolean(
+    member.activeMember
+    && member.isAvailable
+    && member.isWorking
+    && !member.weekOff
+    && member.user?.isActive,
+  );
+}
+
 function normalizeText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
@@ -66,6 +82,13 @@ function projectMatchesLead(queue: Record<string, any>, projectId: string | null
   });
 }
 
+function hasConfiguredProjectScope(queue: Record<string, any>): boolean {
+  return Boolean(
+    normalizeText(queue?.projectId) ||
+    normalizeList(queue?.projectInterested ?? queue?.projects ?? queue?.project ?? queue?.projectName).length,
+  );
+}
+
 export function calculateQueueMatchScore(queue: Record<string, any>, lead: Record<string, any>): number {
   const queueStatus = normalizeList(queue?.leadStatus ?? queue?.statuses ?? queue?.status);
   const queuePriority = normalizeList(queue?.leadPriority ?? queue?.priority ?? queue?.priorities);
@@ -85,7 +108,7 @@ export function calculateQueueMatchScore(queue: Record<string, any>, lead: Recor
 
   let score = 0;
 
-  if (queueStatus.length > 0) {
+  if (queueStatus.length > 0 && !lead?.ignoreStatusCriteria) {
     if (matchesValue(leadStatus, queueStatus)) score += 1_000_000;
     else score -= 1_000_000;
   }
@@ -126,6 +149,34 @@ export function calculateQueueMatchScore(queue: Record<string, any>, lead: Recor
   return score;
 }
 
+function matchesConfiguredQueueCriteria(queue: Record<string, any>, lead: Record<string, any>): boolean {
+  const status = normalizeList(queue?.leadStatus ?? queue?.statuses ?? queue?.status);
+  const priority = normalizeList(queue?.leadPriority ?? queue?.priority ?? queue?.priorities);
+  const sources = normalizeList(queue?.leadSource ?? queue?.sources ?? queue?.source ?? queue?.leadSources);
+  const secondary = normalizeList(queue?.secondarySource ?? queue?.secondarySources ?? queue?.secondarySourceList);
+  const tertiary = normalizeList(queue?.tertiarySource ?? queue?.tertiarySources ?? queue?.tertiarySourceList);
+  const leadStatus = normalizeText(lead?.status);
+  const leadPriority = normalizeText(lead?.priority ?? lead?.rating ?? lead?.leadPriority);
+  const leadSource = normalizeText(lead?.source ?? lead?.leadSource ?? lead?.lastSourceOfEnquiry);
+  const leadSecondary = normalizeText(lead?.secondarySource ?? lead?.lastSubSource ?? lead?.secondary);
+  const leadTertiary = normalizeText(lead?.tertiarySource ?? lead?.lastTertiarySource ?? lead?.tertiary);
+
+  if (status.length && !lead?.ignoreStatusCriteria && !matchesValue(leadStatus, status)) return false;
+  if (priority.length && !matchesValue(leadPriority, priority)) return false;
+  if (secondary.length && !matchesValue(leadSecondary, secondary)) return false;
+  if (tertiary.length && !matchesValue(leadTertiary, tertiary)) return false;
+  if (sources.length) {
+    const directSourceMatch = matchesValue(leadSource, sources);
+    const noSourceFallback = isNoSourceQueue(queue)
+      && !!leadSource
+      && !directSourceMatch
+      && !matchesValue(leadSource, normalizeList(queue?.excludeFromNoSource ?? queue?.excludedSources ?? queue?.excludeFromNoSourceList));
+    if (!directSourceMatch && !noSourceFallback) return false;
+  }
+
+  return projectMatchesLead(queue, normalizeText(lead?.projectId), normalizeText(lead?.project?.name ?? lead?.projectName));
+}
+
 export function isLeadEligibleForAutoAssignment(lead: Record<string, any> | null | undefined, options: { isNewLead?: boolean; force?: boolean } = {}) {
   if (!lead) return false;
   if (options.force) return true;
@@ -148,7 +199,7 @@ export function hasLeadAssignmentRelevantChanges(updateData: Record<string, unkn
 export function getLeadSourceHierarchy(lead: Record<string, any> | null | undefined): string | null {
   if (!lead) return null;
   return (
-    normalizeText(lead.lastSourceOfEnquiry ?? lead.last_Source_Of_Enquiry)
+    normalizeText(lead.lastSourceOfEnquiry ?? lead.last_Source_Of_Enquiry ?? lead.lastSource)
     ?? normalizeText(lead.leadSource ?? lead.source)
     ?? null
   );
@@ -161,7 +212,20 @@ export function getSecondarySourceHierarchy(lead: Record<string, any> | null | u
 
 export function getTertiarySourceHierarchy(lead: Record<string, any> | null | undefined): string | null {
   if (!lead) return null;
-  return normalizeText(lead.lastTertiarySource ?? lead.last_Tertiary_Source ?? lead.tertiarySource ?? lead.tertiary) ?? null;
+  return normalizeText(lead.lastTertiarySource ?? lead.last_Tertiary_Source ?? lead.tertiarySource ?? lead.tertiary ?? lead.lastCampaign) ?? null;
+}
+
+export function rrQueueCriteriaForLead(lead: Record<string, any>, projectName?: string | null) {
+  return {
+    projectName: projectName ?? lead.project?.name ?? null,
+    status: normalizeText(lead.status),
+    ignoreStatusCriteria: true,
+    source: getLeadSourceHierarchy(lead),
+    secondarySource: getSecondarySourceHierarchy(lead),
+    tertiarySource: getTertiarySourceHierarchy(lead),
+    priority: normalizeText(lead.priority ?? lead.rating ?? lead.leadPriority),
+    category: normalizeText(lead.category),
+  };
 }
 
 export function selectNextSequenceMember<T extends { sequenceId: number }>(members: T[], previousId: number): T | null {
@@ -209,7 +273,7 @@ export class RoundRobinAssignmentService {
       include: { members: { include: { user: { select: { id: true, firstName: true, lastName: true, email: true, isActive: true, profile: { select: { name: true } } } } }, orderBy: { sequenceId: 'asc' } } },
     });
     if (!queue) return null;
-    const activeMembers = queue.members.filter((member) => member.activeMember && member.user.isActive);
+    const activeMembers = queue.members.filter(isEligibleRRQueueMember);
     return { ...queue, noOfUsers: activeMembers.length, activeMembers };
   }
 
@@ -399,7 +463,7 @@ export class RoundRobinAssignmentService {
     });
     await tx.siteVisit.update({
       where: { id: siteVisit.id },
-      data: { assigneeId: member.userId, queueId: queue.id },
+      data: { assigneeId: member.userId },
     });
 
     if (lead.ownerId !== member.userId) {
@@ -475,20 +539,53 @@ export async function findProjectRRQueue(
   projectId: string,
   userType: RRMemberUserType,
   tx: RRClient = prisma,
+  criteria?: {
+    projectName?: string | null;
+    status?: string | null;
+    source?: string | null;
+    secondarySource?: string | null;
+    tertiarySource?: string | null;
+    priority?: string | null;
+    category?: string | null;
+    ignoreStatusCriteria?: boolean;
+  },
 ) {
-  const queueWithTypeMembers = await tx.rRQueue.findFirst({
-    where: { tenantId, projectId, active: true, members: { some: { userType } } },
+  const queues = await tx.rRQueue.findMany({
+    where: { tenantId, active: true, members: { some: { userType } } },
     orderBy: { createdAt: 'asc' },
   });
-  return queueWithTypeMembers;
+
+  let projectName = criteria?.projectName ?? null;
+  if (!projectName && typeof tx.project?.findFirst === 'function') {
+    projectName = (await tx.project.findFirst({
+      where: { id: projectId, tenantId },
+      select: { name: true },
+    }))?.name ?? null;
+  }
+  const lead = {
+    ...criteria,
+    projectId,
+    projectName,
+  };
+  return queues
+    .filter((queue) => hasConfiguredProjectScope(queue as Record<string, any>))
+    .filter((queue) => projectMatchesLead(queue as Record<string, any>, projectId, projectName))
+    .map((queue) => ({ queue, score: calculateQueueMatchScore(queue as Record<string, any>, lead) }))
+    .filter(({ queue, score }) => score > 0 && matchesConfiguredQueueCriteria(queue as Record<string, any>, lead))
+    .sort((left, right) => right.score - left.score)[0]?.queue ?? null;
 }
 
 export async function selectNextProjectRRMemberInTransaction(
   tx: Prisma.TransactionClient,
-  params: { tenantId: string; projectId: string | null; userType: RRMemberUserType },
+  params: {
+    tenantId: string;
+    projectId: string | null;
+    userType: RRMemberUserType;
+    criteria?: Parameters<typeof findProjectRRQueue>[4];
+  },
 ) {
   if (!params.projectId) throw new Error('RR_PROJECT_REQUIRED');
-  const queue = await findProjectRRQueue(params.tenantId, params.projectId, params.userType, tx);
+  const queue = await findProjectRRQueue(params.tenantId, params.projectId, params.userType, tx, params.criteria);
   if (!queue) throw new Error(`RR_QUEUE_NOT_CONFIGURED:${params.userType}`);
   const lockedQueue = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
     SELECT "id" FROM "RRQueue"
@@ -539,7 +636,11 @@ export async function assignLeadToProjectRoundRobinInTransaction(
   });
   if (!lead) throw new Error('LEAD_NOT_FOUND');
 
-  const { queue, member } = await selectNextProjectRRMemberInTransaction(tx, params);
+  const criteria = rrQueueCriteriaForLead(lead);
+  const { queue, member } = await selectNextProjectRRMemberInTransaction(tx, {
+    ...params,
+    criteria,
+  });
   const ownerName = `${member.user.firstName} ${member.user.lastName}`.trim() || member.user.email;
   await tx.lead.update({
     where: { id: lead.id },
@@ -641,7 +742,13 @@ export async function assignCompletedSiteVisitToSalesInTransaction(
   };
 
   if (!visit.projectId) return markPending('The completed site visit has no project; Sales assignment is pending.');
-  const queue = await findProjectRRQueue(tenantId, visit.projectId, 'Sales', tx);
+  const queue = await findProjectRRQueue(
+    tenantId,
+    visit.projectId,
+    'Sales',
+    tx,
+    rrQueueCriteriaForLead(visit.lead, visit.project?.name),
+  );
   if (!queue) return markPending(`No active Sales Round Robin queue is configured for ${visit.project?.name || 'this project'}.`);
 
   const lockedQueue = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
@@ -776,7 +883,13 @@ export async function assignSiteVisitToSVCInTransaction(
   if (!visit) throw new Error('SITE_VISIT_NOT_FOUND');
   if (!visit.projectId) throw new Error('SITE_VISIT_PROJECT_REQUIRED');
 
-  const queue = await findProjectRRQueue(params.tenantId, visit.projectId, 'SVC', tx);
+  const queue = await findProjectRRQueue(
+    params.tenantId,
+    visit.projectId,
+    'SVC',
+    tx,
+    rrQueueCriteriaForLead(visit.lead, visit.project?.name),
+  );
   let selectedUserId: string | null = null;
   let selectedMember: Awaited<ReturnType<typeof RoundRobinAssignmentService.getNextEligibleMember>>['member'] = null;
   if (queue) {
@@ -902,12 +1015,9 @@ export async function findApplicableRRQueue(
 
   const scoredQueues = queues
     .map((queue) => ({ queue, score: calculateQueueMatchScore(queue as Record<string, any>, lead) }))
-    .filter(({ score, queue }) => {
-      const configuredSource = normalizeList((queue as Record<string, any>)?.leadSource ?? (queue as Record<string, any>)?.sources ?? (queue as Record<string, any>)?.source ?? (queue as Record<string, any>)?.leadSources);
-      const directSourceMatch = !!lead.source && matchesValue(lead.source, configuredSource);
-      const noSourceFallback = isNoSourceQueue(queue as Record<string, any>) && !!lead.source && !directSourceMatch && !matchesValue(lead.source, normalizeList((queue as Record<string, any>)?.excludeFromNoSource ?? (queue as Record<string, any>)?.excludedSources ?? (queue as Record<string, any>)?.excludeFromNoSourceList));
-      return score > 0 || noSourceFallback || (configuredSource.length === 0 && projectMatchesLead(queue as Record<string, any>, criteria.projectId ?? null, resolvedProjectName) && (!lead.status || normalizeList((queue as Record<string, any>)?.leadStatus ?? (queue as Record<string, any>)?.statuses ?? (queue as Record<string, any>)?.status).length === 0 || matchesValue(lead.status, normalizeList((queue as Record<string, any>)?.leadStatus ?? (queue as Record<string, any>)?.statuses ?? (queue as Record<string, any>)?.status))));
-    });
+    .filter(({ score, queue }) =>
+      score > 0 && matchesConfiguredQueueCriteria(queue as Record<string, any>, lead),
+    );
 
   if (scoredQueues.length === 0) return null;
   scoredQueues.sort((left, right) => right.score - left.score);

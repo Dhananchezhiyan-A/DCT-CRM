@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const database = vi.hoisted(() => ({
   leadCreate: vi.fn(),
+  leadUpdate: vi.fn(),
   leadFindFirst: vi.fn(),
   leadFindMany: vi.fn(),
   leadFindUnique: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('@dct-crm/db', () => ({
   prisma: {
     lead: {
       create: database.leadCreate,
+      update: database.leadUpdate,
       findFirst: database.leadFindFirst,
       findMany: database.leadFindMany,
       findUnique: database.leadFindUnique,
@@ -120,6 +122,21 @@ async function convertLead(body: Record<string, unknown>) {
   });
 }
 
+async function pushLeadToSVC(body: unknown) {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/leads', leadsRouter);
+  const server = app.listen(0);
+  servers.push(server);
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Expected a TCP server address');
+  return fetch(`http://127.0.0.1:${address.port}/api/leads/lead-a/push-to-svc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   database.leadFindFirst.mockResolvedValue({
@@ -138,6 +155,7 @@ beforeEach(() => {
     callback({
       lead: {
         create: database.leadCreate,
+        update: database.leadUpdate,
         findFirst: database.leadFindFirst,
         findMany: database.leadFindMany,
         findUnique: database.leadFindUnique,
@@ -149,10 +167,12 @@ beforeEach(() => {
       project: { findFirst: database.projectFindFirst },
       enquiry: {
         findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
         create: vi.fn().mockResolvedValue({ id: 'enquiry-1' }),
       },
       tenant: { findUnique: vi.fn().mockResolvedValue(null) },
       siteVisit: { create: vi.fn() },
+      $executeRaw: vi.fn().mockResolvedValue(1),
       $queryRaw: vi.fn().mockResolvedValue([]),
     }),
   );
@@ -163,6 +183,21 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   })));
+});
+
+describe('POST /api/leads/:id/push-to-svc request validation', () => {
+  it.each([
+    [{ reason: '   ' }, 'Reason/note is required for status change'],
+    [{ reason: 42 }, 'Expected string, received number'],
+    [{ reason: 'x'.repeat(2001) }, 'Reason/note must be 2000 characters or fewer'],
+  ])('rejects an invalid SVC push note: %j', async (body, expectedError) => {
+    const response = await pushLeadToSVC(body);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ success: false, error: expectedError });
+    expect(database.leadFindFirst).not.toHaveBeenCalled();
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/leads/:id/schedule-site-visit project validation', () => {

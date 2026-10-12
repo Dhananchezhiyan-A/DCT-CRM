@@ -46,6 +46,29 @@ export const authorize = (objectName: string, requiredPermission: keyof Permissi
   };
 };
 
+export const authorizeEffectivePermission = (permissionName: string) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+      if (req.user.isSuperAdmin) return next();
+
+      const permissions = await EffectivePermissionService.getEffectivePermissionsCached(req.user, req.user.id);
+      if (!EffectivePermissionService.hasPermissionIn(permissions, permissionName)) {
+        return res.status(403).json({
+          success: false,
+          error: `Insufficient permissions: ${permissionName}`,
+        });
+      }
+      return next();
+    } catch (error) {
+      console.error('Authorization error:', error);
+      return res.status(500).json({ success: false, error: 'Authorization check failed' });
+    }
+  };
+};
+
 export const checkRecordAccess = async (
   userId: string,
   tenantId: string,

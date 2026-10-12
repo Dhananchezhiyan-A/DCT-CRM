@@ -39,8 +39,6 @@ yarn-error.log*
 Thumbs.db
 
 # Prisma
-packages/db/prisma/migrations/
-
 # Python
 apps/ai/__pycache__/
 apps/ai/**/*.pyc

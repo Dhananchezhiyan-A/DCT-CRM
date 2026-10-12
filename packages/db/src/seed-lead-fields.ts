@@ -156,25 +156,27 @@ const STANDARD_LEAD_FIELDS: FieldSeed[] = [
   // Lead Management
   {
     name: 'source', label: 'Lead Source', fieldType: 'picklist',
-    isStandardField: true, isCustomField: false,
+    isStandardField: false, isCustomField: true,
     displayOrder: 30, searchable: true, sortable: true, filterable: true,
     picklistValues: [
       { label: 'Website', value: 'WEBSITE', displayOrder: 0 },
-      { label: 'Referral', value: 'REFERRAL', displayOrder: 1 },
-      { label: 'Cold Call', value: 'COLD_CALL', displayOrder: 2 },
-      { label: 'Advertisement', value: 'ADVERTISEMENT', displayOrder: 3 },
-      { label: 'Walk-in', value: 'WALK_IN', displayOrder: 4 },
-      { label: 'Portal', value: 'PORTAL', displayOrder: 5 },
-      { label: 'Instagram', value: 'INSTAGRAM', displayOrder: 6 },
-      { label: 'Twitter', value: 'TWITTER', displayOrder: 7 },
-      { label: 'WhatsApp', value: 'WHATSAPP', displayOrder: 8 },
-      { label: 'YouTube', value: 'YOUTUBE', displayOrder: 9 },
-      { label: 'Other', value: 'OTHER', displayOrder: 10, isDefault: true },
+      { label: 'Facebook', value: 'FACEBOOK', displayOrder: 1 },
+      { label: 'Referral', value: 'REFERRAL', displayOrder: 2 },
+      { label: 'Cold Call', value: 'COLD_CALL', displayOrder: 3 },
+      { label: 'Advertisement', value: 'ADVERTISEMENT', displayOrder: 4 },
+      { label: 'Walk-in', value: 'WALK_IN', displayOrder: 5 },
+      { label: 'Portal', value: 'PORTAL', displayOrder: 6 },
+      { label: 'Channel Partner', value: 'CHANNEL_PARTNER', displayOrder: 7 },
+      { label: 'Instagram', value: 'INSTAGRAM', displayOrder: 8 },
+      { label: 'Twitter', value: 'TWITTER', displayOrder: 9 },
+      { label: 'WhatsApp', value: 'WHATSAPP', displayOrder: 10 },
+      { label: 'YouTube', value: 'YOUTUBE', displayOrder: 11 },
+      { label: 'Other', value: 'OTHER', displayOrder: 12, isDefault: true },
     ],
   },
   {
     name: 'status', label: 'Lead Status', fieldType: 'picklist',
-    isStandardField: true, isCustomField: false,
+    isStandardField: false, isCustomField: true,
     displayOrder: 31, searchable: true, sortable: true, filterable: true,
     picklistValues: [
       { label: 'New', value: 'NEW', isDefault: true, displayOrder: 0 },
@@ -188,7 +190,7 @@ const STANDARD_LEAD_FIELDS: FieldSeed[] = [
   },
   {
     name: 'rating', label: 'Rating', fieldType: 'picklist',
-    isStandardField: true, isCustomField: false,
+    isStandardField: false, isCustomField: true,
     displayOrder: 32, searchable: true, sortable: true, filterable: true,
     picklistValues: [
       { label: 'Hot', value: 'HOT', displayOrder: 0 },
@@ -198,12 +200,12 @@ const STANDARD_LEAD_FIELDS: FieldSeed[] = [
   },
   {
     name: 'description', label: 'Description', fieldType: 'longText',
-    isStandardField: true, isCustomField: false,
+    isStandardField: false, isCustomField: true,
     displayOrder: 33, maxLength: 5000,
   },
   {
     name: 'score', label: 'Score', fieldType: 'number',
-    isSystemField: true, isCustomField: false, isStandardField: true,
+    isSystemField: false, isCustomField: true, isStandardField: false,
     displayOrder: 34, sortable: true, filterable: true, editable: false, minValue: 0, maxValue: 100, visible: false,
   },
 
@@ -236,6 +238,7 @@ const STANDARD_LEAD_FIELDS: FieldSeed[] = [
 ];
 
 async function seedLeadFieldsForTenant(tenantId: string, createdBy: string) {
+  const operationalCustomFieldNames = new Set(['source', 'status', 'rating', 'description', 'score']);
   // Find or create Lead ObjectDefinition
   let leadObject = await prisma.objectDefinition.findFirst({
     where: { tenantId, name: { equals: 'Lead', mode: 'insensitive' } },
@@ -275,11 +278,21 @@ async function seedLeadFieldsForTenant(tenantId: string, createdBy: string) {
     });
 
     if (existing) {
-      // Update isStandardField if it wasn't set
-      if (!existing.isStandardField) {
+      if (
+        operationalCustomFieldNames.has(fieldSeed.name) &&
+        (
+          existing.isSystemField !== (fieldSeed.isSystemField ?? false) ||
+          existing.isStandardField !== (fieldSeed.isStandardField ?? false) ||
+          existing.isCustomField !== (fieldSeed.isCustomField ?? false)
+        )
+      ) {
         await prisma.fieldDefinition.update({
           where: { id: existing.id },
-          data: { isStandardField: true, isCustomField: fieldSeed.isCustomField ?? false },
+          data: {
+            isSystemField: fieldSeed.isSystemField ?? false,
+            isStandardField: fieldSeed.isStandardField ?? false,
+            isCustomField: fieldSeed.isCustomField ?? false,
+          },
         });
       }
       if (fieldSeed.label && existing.label !== fieldSeed.label) {
@@ -293,6 +306,26 @@ async function seedLeadFieldsForTenant(tenantId: string, createdBy: string) {
           where: { id: existing.id },
           data: { visible: fieldSeed.visible },
         });
+      }
+      if (fieldSeed.picklistValues?.length) {
+        for (const value of fieldSeed.picklistValues) {
+          await prisma.picklistValue.upsert({
+            where: { fieldId_value: { fieldId: existing.id, value: value.value } },
+            update: {
+              label: value.label,
+              isDefault: value.isDefault ?? false,
+              displayOrder: value.displayOrder,
+            },
+            create: {
+              tenantId,
+              fieldId: existing.id,
+              label: value.label,
+              value: value.value,
+              isDefault: value.isDefault ?? false,
+              displayOrder: value.displayOrder,
+            },
+          });
+        }
       }
       skippedCount++;
       continue;

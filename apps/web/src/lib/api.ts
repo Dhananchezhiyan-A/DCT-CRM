@@ -44,6 +44,7 @@ export interface ApiResponse<T = any> {
   error?: string;
   message?: string;
   warning?: string;
+  summary?: Record<string, number>;
   pagination?: {
     page: number;
     limit: number;
@@ -69,6 +70,8 @@ export const leadApi = {
     api.get<ApiResponse>(`/api/leads/${id}`),
   create: (data: any) =>
     api.post<ApiResponse>('/api/leads', data),
+  checkDuplicates: (data: any) =>
+    api.post<ApiResponse>('/api/leads/duplicates', data),
   update: (id: string, data: any) =>
     api.put<ApiResponse>(`/api/leads/${id}`, data),
   delete: (id: string) =>
@@ -101,6 +104,10 @@ export const leadApi = {
 export const enquiryApi = {
   get: (id: string) =>
     api.get<ApiResponse>(`/api/enquiries/${id}`),
+  update: (id: string, data: Record<string, unknown>) =>
+    api.put<ApiResponse>(`/api/enquiries/${id}`, data),
+  delete: (id: string) =>
+    api.delete<ApiResponse>(`/api/enquiries/${id}`),
 };
 
 // Site Visit API
@@ -147,6 +154,8 @@ export const opportunityApi = {
     api.delete<ApiResponse>(`/api/opportunities/${id}`),
   updateStage: (id: string, stage: string) =>
     api.patch<ApiResponse>(`/api/opportunities/${id}/stage`, { stage }),
+  financialSummary: (id: string) =>
+    api.get<ApiResponse>(`/api/opportunities/${id}/financial-summary`),
 };
 
 // Quotation API
@@ -213,6 +222,28 @@ export const paymentApi = {
     api.patch<ApiResponse>(`/api/payments/${id}/verify`),
   reject: (id: string, reason?: string) =>
     api.patch<ApiResponse>(`/api/payments/${id}/reject`, { reason }),
+  allocations: (id: string) =>
+    api.get<ApiResponse>(`/api/payments/${id}/allocations`),
+  allocate: (id: string, installmentId: string, amount: number) =>
+    api.post<ApiResponse>(`/api/payments/${id}/allocations`, { installmentId, amount }),
+};
+
+export const installmentApi = {
+  listForBooking: (bookingId: string) =>
+    api.get<ApiResponse>(`/api/installments/bookings/${bookingId}`),
+};
+
+export const receiptApi = {
+  list: (params?: Record<string, any>) =>
+    api.get<ApiResponse>('/api/receipts', { params }),
+  get: (id: string) =>
+    api.get<ApiResponse>(`/api/receipts/${id}`),
+  issueForPayment: (paymentId: string) =>
+    api.post<ApiResponse>(`/api/receipts/payments/${paymentId}/issue`),
+  downloadPdf: (id: string) =>
+    api.get(`/api/receipts/${id}/pdf`, { responseType: 'blob' }),
+  cancel: (id: string, reason: string) =>
+    api.patch<ApiResponse>(`/api/receipts/${id}/cancel`, { reason }),
 };
 
 // Project API
@@ -316,6 +347,29 @@ export const activityApi = {
     api.put<ApiResponse>(`/api/activities/${id}`, data),
   delete: (id: string) =>
     api.delete<ApiResponse>(`/api/activities/${id}`),
+};
+
+export const callDetailsApi = {
+  list: (leadId: string) =>
+    api.get<ApiResponse>(`/api/call-details`, { params: { leadId } }),
+  create: (data: {
+    leadId: string;
+    caseId?: string;
+    opportunityId?: string;
+    callType: "INBOUND" | "OUTBOUND";
+    callFrom?: string;
+    callTo?: string;
+    startAt: string;
+    endAt: string;
+    executiveContactNo?: string;
+    landingNumber?: string;
+    parentId?: string;
+    parentUrl?: string;
+    recordingFile?: string;
+    status?: string;
+    notes?: string;
+  }) =>
+    api.post<ApiResponse>("/api/call-details", data),
 };
 
 // Object Definition API

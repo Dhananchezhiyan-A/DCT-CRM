@@ -34,6 +34,7 @@ const standardObjects = [
   { name: 'Task', label: 'Task', pluralLabel: 'Tasks', icon: 'check-square', description: 'Manage tasks' },
   { name: 'FollowUp', label: 'Follow-up', pluralLabel: 'Follow-ups', icon: 'phone', description: 'Manage lead follow-ups' },
   { name: 'Activity', label: 'Activity', pluralLabel: 'Activities', icon: 'activity', description: 'Track CRM activities' },
+  { name: 'CallDetail', label: 'Call Detail', pluralLabel: 'Call Details', icon: 'phone', description: 'Track inbound and outbound calls', isAvailableInNavigation: false },
 ];
 
 const mappedLeadFields = new Set([
@@ -122,12 +123,13 @@ function toFieldDefinitions(
     .filter((field) => !mappedFields.has(field.apiName))
     .map((field, index) => {
       const inferred = fieldTypeFor(field.sourceType);
+      const lifecycleTypeField = objectName === 'Lead' && field.apiName === 'Lead_Type__c';
       const name = `sf_${field.apiName}`;
       return {
         name,
         label: field.label,
-        fieldType: inferred.fieldType,
-        helpText: inferred.helpText,
+        fieldType: lifecycleTypeField ? 'picklist' : inferred.fieldType,
+        helpText: lifecycleTypeField ? null : inferred.helpText,
         maxLength: inferred.maxLength,
         visible: !inferred.readOnly,
         editable: !inferred.readOnly,
@@ -182,6 +184,35 @@ async function seedObjectFields(
     skipDuplicates: true,
   });
 
+  if (objectName === 'Lead') {
+    const leadTypeField = await prisma.fieldDefinition.findFirst({
+      where: { tenantId, objectId: object.id, name: 'sf_Lead_Type__c' },
+      select: { id: true },
+    });
+    if (leadTypeField) {
+      await prisma.fieldDefinition.update({
+        where: { id: leadTypeField.id },
+        data: { fieldType: 'picklist', helpText: null, visible: true, editable: true },
+      });
+      const lifecycleTypes = [
+        { label: 'Fresh', value: 'Fresh', displayOrder: 0, isDefault: true },
+        { label: 'Re-Opened', value: 'Re-Opened', displayOrder: 1, isDefault: false },
+        { label: 'Re-Engaged', value: 'Re-Engaged', displayOrder: 2, isDefault: false },
+      ];
+      await prisma.picklistValue.updateMany({
+        where: { tenantId, fieldId: leadTypeField.id, value: { notIn: lifecycleTypes.map(({ value }) => value) } },
+        data: { isActive: false },
+      });
+      for (const option of lifecycleTypes) {
+        await prisma.picklistValue.upsert({
+          where: { fieldId_value: { fieldId: leadTypeField.id, value: option.value } },
+          create: { tenantId, fieldId: leadTypeField.id, ...option, isActive: true },
+          update: { ...option, isActive: true },
+        });
+      }
+    }
+  }
+
   const existingLayout = await prisma.pageLayout.findFirst({
     where: { objectId: object.id, name: 'Default Layout' },
   });
@@ -191,11 +222,48 @@ async function seedObjectFields(
       : existingLayout.sections) as { name: string; fields: string[] }[]
     : [];
   const sections = Array.isArray(rawSections) ? rawSections : [];
-  const sectionName = objectName === 'Lead' ? 'Imported Salesforce Lead Fields' : 'Imported Salesforce Site Visit Fields';
-  const updatedSections = [
-    ...sections.filter((section) => section.name !== sectionName),
-    { name: sectionName, fields: importedNames },
-  ];
+  let updatedSections: { name: string; fields: string[] }[];
+  if (objectName === 'Lead') {
+    const legacyImportedSection = sections.find(
+      (section) => section.name === 'Imported Salesforce Lead Fields',
+    );
+    const retainedSections = sections.filter(
+      (section) => section.name !== 'Imported Salesforce Lead Fields',
+    );
+    const leadInformationIndex = retainedSections.findIndex(
+      (section) => section.name === 'Lead Information' || section.name === 'Lead Details',
+    );
+
+    if (leadInformationIndex >= 0) {
+      updatedSections = retainedSections.map((section, index) =>
+        index === leadInformationIndex
+          ? {
+              name: 'Lead Information',
+              fields: [...new Set([
+                ...section.fields,
+                'projectId',
+                ...(legacyImportedSection?.fields ?? []),
+                ...importedNames,
+              ])],
+            }
+          : section,
+      );
+    } else {
+      updatedSections = [
+        ...retainedSections,
+        {
+          name: 'Lead Information',
+          fields: [...new Set(['projectId', ...(legacyImportedSection?.fields ?? []), ...importedNames])],
+        },
+      ];
+    }
+  } else {
+    const sectionName = 'Imported Salesforce Site Visit Fields';
+    updatedSections = [
+      ...sections.filter((section) => section.name !== sectionName),
+      { name: sectionName, fields: importedNames },
+    ];
+  }
 
   if (existingLayout) {
     await prisma.pageLayout.update({
@@ -348,6 +416,113 @@ async function ensureStandardObjects(tenantId: string, createdBy: string) {
   }
 }
 
+async function seedCallDetailFields(tenantId: string, createdBy: string) {
+  const object = await prisma.objectDefinition.findFirst({
+    where: { tenantId, name: 'CallDetail', isActive: true },
+    select: { id: true },
+  });
+  if (!object) return;
+
+  const fields: Array<{
+    name: string;
+    label: string;
+    fieldType: string;
+    lookupObject?: string;
+    isSystemField?: boolean;
+    editable?: boolean;
+    required?: boolean;
+  }> = [
+    { name: 'name', label: 'Call Details Name', fieldType: 'autoNumber', isSystemField: true, editable: false },
+    { name: 'callFrom', label: 'Call From', fieldType: 'text' },
+    { name: 'callId', label: 'Call ID', fieldType: 'text', isSystemField: true, editable: false },
+    { name: 'callTo', label: 'Call To', fieldType: 'text' },
+    { name: 'callType', label: 'Call Type', fieldType: 'picklist', required: true },
+    { name: 'caseId', label: 'Case', fieldType: 'lookup', lookupObject: 'Lead' },
+    { name: 'createdById', label: 'Created By', fieldType: 'lookup', lookupObject: 'User', isSystemField: true, editable: false },
+    { name: 'duration', label: 'Duration', fieldType: 'number', isSystemField: true, editable: false },
+    { name: 'endAt', label: 'End Time', fieldType: 'dateTime', required: true },
+    { name: 'executiveContactNo', label: 'Executive Contact No', fieldType: 'text' },
+    { name: 'landingNumber', label: 'Landing Number', fieldType: 'text' },
+    { name: 'lastModifiedById', label: 'Last Modified By', fieldType: 'lookup', lookupObject: 'User', isSystemField: true, editable: false },
+    { name: 'leadId', label: 'Lead', fieldType: 'lookup', lookupObject: 'Lead', required: true, isSystemField: true, editable: false },
+    { name: 'opportunityId', label: 'Opportunity', fieldType: 'lookup', lookupObject: 'Opportunity' },
+    { name: 'ownerId', label: 'Owner', fieldType: 'lookup', lookupObject: 'User' },
+    { name: 'parentId', label: 'Parent ID', fieldType: 'text' },
+    { name: 'parentUrl', label: 'Parent URL', fieldType: 'url' },
+    { name: 'recordingFile', label: 'Recording File', fieldType: 'url' },
+    { name: 'startAt', label: 'Start Time', fieldType: 'dateTime', required: true },
+    { name: 'status', label: 'Status', fieldType: 'picklist' },
+    { name: 'notes', label: 'Notes', fieldType: 'longText' },
+  ];
+  await prisma.fieldDefinition.createMany({
+    data: fields.map((field, displayOrder) => ({
+      tenantId,
+      objectId: object.id,
+      ...field,
+      required: field.required ?? false,
+      searchable: true,
+      sortable: true,
+      filterable: true,
+      visible: true,
+      editable: field.editable ?? true,
+      isActive: true,
+      isSystemField: field.isSystemField ?? false,
+      isCustomField: false,
+      isStandardField: true,
+      displayOrder,
+      createdBy,
+    })),
+    skipDuplicates: true,
+  });
+
+  for (const [fieldName, options] of Object.entries({
+    callType: ['INBOUND', 'OUTBOUND'],
+    status: ['COMPLETED', 'NO_ANSWER', 'BUSY', 'VOICEMAIL', 'CANCELLED'],
+  })) {
+    const field = await prisma.fieldDefinition.findUnique({
+      where: { objectId_name: { objectId: object.id, name: fieldName } },
+      select: { id: true },
+    });
+    if (!field) continue;
+    for (const [displayOrder, value] of options.entries()) {
+      await prisma.picklistValue.upsert({
+        where: { fieldId_value: { fieldId: field.id, value } },
+        create: {
+          tenantId,
+          fieldId: field.id,
+          label: value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (letter: string) => letter.toUpperCase()),
+          value,
+          isDefault: displayOrder === 0,
+          displayOrder,
+        },
+        update: {
+          isActive: true,
+          isDefault: displayOrder === 0,
+          displayOrder,
+        },
+      });
+    }
+  }
+
+  const sections = [
+    { name: 'Call Information', fields: ['name', 'callFrom', 'callId', 'callTo', 'callType', 'duration', 'startAt', 'endAt', 'status'] },
+    { name: 'Related Records', fields: ['caseId', 'createdById', 'lastModifiedById', 'leadId', 'opportunityId', 'ownerId', 'parentId', 'parentUrl'] },
+    { name: 'Details', fields: ['executiveContactNo', 'landingNumber', 'recordingFile', 'notes'] },
+  ];
+  await prisma.pageLayout.upsert({
+    where: { objectId_name: { objectId: object.id, name: 'Default Layout' } },
+    create: {
+      tenantId,
+      objectId: object.id,
+      name: 'Default Layout',
+      isDefault: true,
+      sections,
+      createdBy,
+    },
+    update: { isDefault: true, sections },
+  });
+}
+
 async function main() {
   const tenants = await prisma.tenant.findMany({
     where: { isActive: true },
@@ -366,6 +541,7 @@ async function main() {
     }
 
     await ensureStandardObjects(tenant.id, user.id);
+    await seedCallDetailFields(tenant.id, user.id);
     const [leadCount, siteVisitCount, taskCount] = await Promise.all([
       seedObjectFields(tenant.id, user.id, 'Lead', leadFields),
       seedObjectFields(tenant.id, user.id, 'SiteVisit', siteVisitFields),

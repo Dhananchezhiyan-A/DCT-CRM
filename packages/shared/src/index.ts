@@ -3,6 +3,17 @@ import { z } from 'zod';
 export const PHONE_DUPLICATE_ERROR = 'Phone number already exists for another lead.';
 const CRM_TIMEZONE = 'Asia/Kolkata';
 
+export function normalizePermissionName(permissionName: string): string {
+  const normalized = permissionName.trim().toUpperCase();
+  const aliases: Record<string, string> = {
+    EDIT: 'UPDATE',
+    VIEW: 'READ',
+    DELECT: 'DELETE',
+  };
+
+  return normalized.replace(/_(EDIT|VIEW|DELECT)$/, (suffix) => `_${aliases[suffix.slice(1)]}`);
+}
+
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getCRMFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
@@ -108,7 +119,7 @@ export const leadSchema = z.object({
   }).trim().min(1, 'Last name is required'),
   salutation: z.enum(['MR', 'MS', 'MRS', 'DR', 'PROF']).optional(),
   title: z.string().optional(),
-  email: z.string().email().optional().or(z.literal('')),
+  email: z.string().trim().email().optional().or(z.literal('')),
   phone: z.string({
     required_error: 'Phone number is required.',
     invalid_type_error: 'Phone number is required.',
@@ -122,7 +133,7 @@ export const leadSchema = z.object({
   industry: z.enum(['TECHNOLOGY', 'HEALTHCARE', 'FINANCE', 'EDUCATION', 'MANUFACTURING', 'RETAIL', 'REAL_ESTATE', 'CONSTRUCTION', 'HOSPITALITY', 'AUTOMOTIVE', 'ENERGY', 'TELECOMMUNICATIONS', 'MEDIA', 'GOVERNMENT', 'OTHER']).optional(),
   annualRevenue: z.number().optional(),
   numberOfEmployees: z.number().optional(),
-  source: z.enum(['WEBSITE', 'REFERRAL', 'COLD_CALL', 'ADVERTISEMENT', 'WALK_IN', 'PORTAL', 'INSTAGRAM', 'TWITTER', 'WHATSAPP', 'YOUTUBE', 'OTHER'], {
+  source: z.enum(['WEBSITE', 'FACEBOOK', 'REFERRAL', 'COLD_CALL', 'ADVERTISEMENT', 'WALK_IN', 'PORTAL', 'INSTAGRAM', 'TWITTER', 'WHATSAPP', 'YOUTUBE', 'OTHER'], {
     required_error: 'Lead Source is required.',
     invalid_type_error: 'Lead Source is required.',
   }),
@@ -271,6 +282,7 @@ export const followUpSchema = z.object({
   description: z.string().min(1, 'Description/Note is required'),
   dueDate: z.string().min(1, 'Due date is required'),
   leadId: z.string().optional(),
+  ownerId: z.string().min(1, 'Assigned user is required').optional(),
 });
 
 export const activitySchema = z.object({

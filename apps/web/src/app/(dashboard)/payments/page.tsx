@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ColumnDef } from "@tanstack/react-table";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/crm/data-table";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,8 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { paymentApi } from "@/lib/api";
-import { bookingApi } from "@/lib/api";
+import { paymentApi, bookingApi, leadApi, projectApi, quotationApi, unitApi } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,9 +46,14 @@ interface Payment {
   bookingId?: string;
   amount: number;
   method: string;
-  status: "pending" | "completed" | "failed" | "refunded";
+  status: "pending" | "verified" | "partial" | "completed" | "rejected" | "failed" | "refunded";
   paymentDate: string;
   reference?: string;
+  quotationId?: string;
+  quotationNumber?: string;
+  receiptNumber?: string;
+  projectName?: string;
+  unitNumber?: string;
 }
 
 const statusColors: Record<string, string> = {
@@ -56,6 +61,9 @@ const statusColors: Record<string, string> = {
   completed: "bg-green-100 text-green-800",
   failed: "bg-red-100 text-red-800",
   refunded: "bg-purple-100 text-purple-800",
+  verified: "bg-green-100 text-green-800",
+  partial: "bg-blue-100 text-blue-800",
+  rejected: "bg-red-100 text-red-800",
 };
 
 const methodColors: Record<string, string> = {
@@ -109,6 +117,15 @@ const columns: ColumnDef<Payment>[] = [
       ),
   },
   {
+    accessorKey: "quotationNumber",
+    header: "Quotation",
+    cell: ({ row }) => row.original.quotationId
+      ? <Link href={`/quotations/${row.original.quotationId}`} className="text-primary hover:underline">{row.original.quotationNumber || "View"}</Link>
+      : row.original.quotationNumber || "—",
+  },
+  { accessorKey: "projectName", header: "Project" },
+  { accessorKey: "unitNumber", header: "Unit" },
+  {
     accessorKey: "amount",
     header: "Amount",
     cell: ({ row }) => (
@@ -150,6 +167,13 @@ const columns: ColumnDef<Payment>[] = [
     cell: ({ row }) => row.getValue("reference") || "-",
   },
   {
+    accessorKey: "receiptNumber",
+    header: "Receipt",
+    cell: ({ row }) => row.original.receiptNumber
+      ? <Link href={`/receipts?search=${encodeURIComponent(row.original.receiptNumber)}`} className="text-primary hover:underline">{row.original.receiptNumber}</Link>
+      : "—",
+  },
+  {
     id: "actions",
     cell: ({ row }) => {
       const payment = row.original;
@@ -189,7 +213,22 @@ export default function PaymentsPage() {
   const [currentPage, setCurrentPage] = React.useState(1);
   const [payments, setPayments] = React.useState<Payment[]>([]);
   const [totalItems, setTotalItems] = React.useState(0);
+  const [summary, setSummary] = React.useState({ successfulAmount: 0, pendingAmount: 0, rejectedAmount: 0, reversedAmount: 0, reversedCount: 0 });
   const [isLoading, setIsLoading] = React.useState(true);
+  const [search, setSearch] = React.useState("");
+  const [debouncedSearch, setDebouncedSearch] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState("");
+  const [projectFilter, setProjectFilter] = React.useState("");
+  const [leadFilter, setLeadFilter] = React.useState("");
+  const [unitFilter, setUnitFilter] = React.useState("");
+  const [quotationFilter, setQuotationFilter] = React.useState("");
+  const [modeFilter, setModeFilter] = React.useState("");
+  const [startDate, setStartDate] = React.useState("");
+  const [endDate, setEndDate] = React.useState("");
+  const [projects, setProjects] = React.useState<Array<{ id: string; name: string }>>([]);
+  const [leads, setLeads] = React.useState<Array<{ id: string; firstName?: string | null; lastName?: string | null }>>([]);
+  const [units, setUnits] = React.useState<Array<{ id: string; number: string; project?: { name: string } | null }>>([]);
+  const [quotations, setQuotations] = React.useState<Array<{ id: string; number: string }>>([]);
   const [recordPaymentOpen, setRecordPaymentOpen] = React.useState(false);
   const [isSavingPayment, setIsSavingPayment] = React.useState(false);
   const [isLoadingBookings, setIsLoadingBookings] = React.useState(false);
@@ -199,6 +238,29 @@ export default function PaymentsPage() {
   const [paymentDate, setPaymentDate] = React.useState("");
   const [paymentReference, setPaymentReference] = React.useState("");
   const [paymentNotes, setPaymentNotes] = React.useState("");
+
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  React.useEffect(() => {
+    Promise.all([
+      projectApi.list({ page: 1, limit: 100, isActive: true }),
+      leadApi.list({ page: 1, limit: 100 }),
+      unitApi.list({ page: 1, limit: 200 }),
+      quotationApi.list({ page: 1, limit: 100 }),
+    ]).then(([projectResponse, leadResponse, unitResponse, quotationResponse]) => {
+      setProjects(projectResponse.data.data || []);
+      setLeads(leadResponse.data.data || []);
+      setUnits(unitResponse.data.data || []);
+      setQuotations(quotationResponse.data.data || []);
+    }).catch((error: any) => toast({
+      title: "Some payment filters are unavailable",
+      description: error?.response?.data?.error || "Could not load all filter options.",
+      variant: "destructive" as any,
+    }));
+  }, [toast]);
 
   const openRecordPayment = async () => {
     setIsLoadingBookings(true);
@@ -276,7 +338,19 @@ export default function PaymentsPage() {
     const fetchPayments = async () => {
       try {
         setIsLoading(true);
-        const res = await paymentApi.list({ page: currentPage, limit: 20 });
+        const res = await paymentApi.list({
+          page: currentPage,
+          limit: 20,
+          ...(debouncedSearch ? { search: debouncedSearch } : {}),
+          ...(statusFilter ? { status: statusFilter.toUpperCase() } : {}),
+          ...(projectFilter ? { projectId: projectFilter } : {}),
+          ...(leadFilter ? { leadId: leadFilter } : {}),
+          ...(unitFilter ? { unitId: unitFilter } : {}),
+          ...(quotationFilter ? { quotationId: quotationFilter } : {}),
+          ...(modeFilter ? { paymentMode: modeFilter } : {}),
+          ...(startDate ? { startDate: new Date(`${startDate}T00:00:00`).toISOString() } : {}),
+          ...(endDate ? { endDate: new Date(`${endDate}T23:59:59.999`).toISOString() } : {}),
+        });
         if (res.data.success && res.data.data) {
           const mapped = res.data.data.map((item: any) => ({
             id: item.id,
@@ -287,13 +361,25 @@ export default function PaymentsPage() {
             bookingNumber: item.booking?.number || "—",
             bookingId: item.booking?.id,
             amount: item.amount || 0,
-            method: (item.method || "online").toLowerCase(),
-            status: (item.status || "pending").toLowerCase() as Payment["status"],
+            method: String(item.notes?.match(/^Payment mode:\s*(.+)$/im)?.[1] || item.method || "—").toLowerCase(),
+            status: String(item.status || "pending").toLowerCase() as Payment["status"],
             paymentDate: item.paymentDate || item.createdAt,
             reference: item.reference,
+            quotationId: item.booking?.quotation?.id,
+            quotationNumber: item.booking?.quotation?.number,
+            receiptNumber: item.receipt?.receiptNumber,
+            projectName: item.booking?.project?.name || "—",
+            unitNumber: item.booking?.unit?.number || "—",
           }));
           setPayments(mapped);
           setTotalItems(res.data.pagination?.total ?? mapped.length);
+          setSummary({
+            successfulAmount: Number(res.data.summary?.successfulAmount || 0),
+            pendingAmount: Number(res.data.summary?.pendingAmount || 0),
+            rejectedAmount: Number(res.data.summary?.rejectedAmount || 0),
+            reversedAmount: Number(res.data.summary?.reversedAmount || 0),
+            reversedCount: Number(res.data.summary?.reversedCount || 0),
+          });
         } else {
           setPayments([]);
           setTotalItems(0);
@@ -307,7 +393,7 @@ export default function PaymentsPage() {
       }
     };
     fetchPayments();
-  }, [currentPage, toast]);
+  }, [currentPage, debouncedSearch, statusFilter, projectFilter, leadFilter, unitFilter, quotationFilter, modeFilter, startDate, endDate, toast]);
 
   if (isLoading) {
     return (
@@ -335,9 +421,9 @@ export default function PaymentsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Payments</h1>
+          <h1 className="text-xl font-semibold">Payment History</h1>
           <p className="text-muted-foreground">
-            Track and manage all payments
+            Search payment transactions and follow them back to their quotations and receipts.
           </p>
         </div>
         <div className="flex gap-2">
@@ -354,11 +440,56 @@ export default function PaymentsPage() {
         </div>
       </div>
 
+      <div className="grid gap-3 rounded-lg border bg-card p-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Input className="lg:col-span-2" value={search} onChange={(event) => { setSearch(event.target.value); setCurrentPage(1); }} placeholder="Search customer, project, unit, booking, quotation, receipt, or reference" aria-label="Search payment history" />
+        <select aria-label="Filter payments by project" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={projectFilter} onChange={(event) => { setProjectFilter(event.target.value); setCurrentPage(1); }}>
+          <option value="">All projects</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <select aria-label="Filter payments by customer" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={leadFilter} onChange={(event) => { setLeadFilter(event.target.value); setCurrentPage(1); }}>
+          <option value="">All customers</option>
+          {leads.map((lead) => <option key={lead.id} value={lead.id}>{`${lead.firstName || ""} ${lead.lastName || ""}`.trim()}</option>)}
+        </select>
+        <select aria-label="Filter payments by unit" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={unitFilter} onChange={(event) => { setUnitFilter(event.target.value); setCurrentPage(1); }}>
+          <option value="">All units</option>
+          {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.number}{unit.project?.name ? ` · ${unit.project.name}` : ""}</option>)}
+        </select>
+        <select aria-label="Filter payments by quotation" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={quotationFilter} onChange={(event) => { setQuotationFilter(event.target.value); setCurrentPage(1); }}>
+          <option value="">All quotations</option>
+          {quotations.map((quotation) => <option key={quotation.id} value={quotation.id}>{quotation.number}</option>)}
+        </select>
+        <select aria-label="Filter payments by status" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setCurrentPage(1); }}>
+          <option value="">All payment statuses</option>
+          <option value="pending">Pending</option><option value="verified">Verified</option><option value="completed">Completed</option><option value="partial">Partial</option><option value="rejected">Rejected</option>
+        </select>
+        <select aria-label="Filter payments by payment mode" className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={modeFilter} onChange={(event) => { setModeFilter(event.target.value); setCurrentPage(1); }}>
+          <option value="">All payment modes</option>
+          {["Cash", "Bank Transfer", "UPI", "Cheque", "Card", "Online"].map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+        </select>
+        <div className="flex gap-2 lg:col-span-5">
+          <Input aria-label="Payment start date" type="date" value={startDate} onChange={(event) => { setStartDate(event.target.value); setCurrentPage(1); }} />
+          <Input aria-label="Payment end date" type="date" value={endDate} onChange={(event) => { setEndDate(event.target.value); setCurrentPage(1); }} />
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          ["Verified received", summary.successfulAmount],
+          ["Pending verification", summary.pendingAmount],
+          ["Rejected payments", summary.rejectedAmount],
+          ["Reversed receipts", summary.reversedAmount],
+        ].map(([label, amount]) => (
+          <Card key={String(label)}><CardContent className="p-4">
+            <p className="text-sm text-muted-foreground">{label}</p>
+            <p className="mt-1 text-lg font-semibold">{formatCurrency(Number(amount))}</p>
+            {label === "Reversed receipts" && <p className="text-xs text-muted-foreground">{summary.reversedCount} cancelled receipt(s)</p>}
+          </CardContent></Card>
+        ))}
+      </div>
+
       <DataTable
         columns={columns}
         data={payments}
-        searchKey="paymentNumber"
-        searchPlaceholder="Search by payment number..."
           totalItems={totalItems}
           currentPage={currentPage}
           onPageChange={setCurrentPage}

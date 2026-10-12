@@ -140,3 +140,56 @@ dct-crm/
 │   ├── db/           # Prisma schema & migrations
 │   └── shared/       # Shared Zod schemas
 ```
+
+## Lead duplicate handling
+
+Manual Lead creation is processed by the backend `processLeadEnquiry` service.
+It validates contact data, checks for duplicates inside the create transaction,
+and only sends a genuinely new Lead through the existing assignment workflow.
+A single match is retained as the Main Lead and receives a source-specific
+`Enquiry` record; multiple matches are returned as an ambiguous conflict for
+review rather than selecting a Lead arbitrarily. This repository does not
+contain Salesforce `SLeadTrigger` or `RelatedSourceHandler.duplicateCheck2()`
+source code; the equivalent source-history model here is `Enquiry`.
+
+Phone matching compares all three submitted phone slots with stored Lead phone
+slots and phone slots on related `Enquiry` records. Formatting is removed and
+country calling codes are included in normalized identities. Email matching
+trims whitespace and ignores case across primary and secondary email slots.
+Manual creation, GRE, Channel Partner Portal, and CSV Lead imports use the
+backend matcher. CSV Lead rows are normalized and matched in one batched lookup,
+then processed under one transaction with sorted contact locks; a conflict or
+invalid row rolls back the entire import. Enquiries for a different project
+are attached to the existing Lead without replacing its primary project
+association.
+
+Apply the additive country-code columns and normalized lookup indexes before
+starting an API built with this change:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f packages/db/migrations/20261011_lead_duplicate_detection.sql
+```
+
+Lead detail queries also load related Opportunities. Ensure the database has
+the nullable `Opportunity.notes` column expected by the Prisma schema:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f packages/db/migrations/20261011_opportunity_notes.sql
+```
+
+Run focused backend checks with:
+
+```bash
+node node_modules/typescript/bin/tsc --noEmit -p apps/api/tsconfig.json
+node node_modules/vitest/vitest.mjs run apps/api/src
+```
+
+The database-backed concurrency test is opt-in. Run it against a local seeded
+database with:
+
+```bash
+LEAD_DUPLICATE_INTEGRATION=1 node node_modules/vitest/vitest.mjs run \
+  apps/api/src/services/enquiryProcessing.integration.test.ts
+```

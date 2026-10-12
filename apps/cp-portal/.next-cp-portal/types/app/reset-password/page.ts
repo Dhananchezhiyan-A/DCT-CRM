@@ -1,4 +1,4 @@
-// File: C:\Users\haris\OneDrive\Desktop\CRM-MAIN\hh\apps\cp-portal\src\app\reset-password\page.tsx
+// File: /Users/dinakarans/Downloads/DCT-CRM 2/apps/cp-portal/src/app/reset-password/page.tsx
 import * as entry from '../../../../src/app/reset-password/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

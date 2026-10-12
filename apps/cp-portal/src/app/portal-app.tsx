@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 
@@ -10,7 +10,7 @@ type CRMNote = { id: string; subject: string; description: string | null; create
 type Lead = {
   id: string; leadNumber: string | null; firstName: string | null; lastName: string;
   email: string | null; secondaryEmail: string | null; phone: string | null;
-  secondaryPhone: string | null; projectId: string | null; budget: number | null;
+  secondaryPhone: string | null; tertiaryPhone: string | null; projectId: string | null; budget: number | null;
   sqftRange: string | null; bhkSize: string | null; propertyType: string | null;
   source: string; status: string; rating: string | null; validity: string | null;
   createdAt: string; description: string | null; invoiceRaised: boolean;
@@ -240,9 +240,9 @@ function Leads({ setError }: { setError: (value: string) => void }) {
   }, [search, stage, setError]);
   useEffect(() => { const timer = setTimeout(() => void load(), 180); return () => clearTimeout(timer); }, [load]);
   const exportCsv = () => {
-    const columns = ['Lead ID', 'Lead Name', 'Primary Email', 'Primary Phone', 'Secondary Email', 'Secondary Phone', 'Project', 'Budget', 'SQFT Range', 'BHK Size', 'Property Type', 'Type', 'Status', 'Validity', 'Created Date', 'Site Visit', 'Stage', 'Recent Notes', 'CRM/Sales Notes'];
+    const columns = ['Lead ID', 'Lead Name', 'Primary Email', 'Primary Phone', 'Secondary Email', 'Secondary Phone', 'Tertiary Phone', 'Project', 'Budget', 'SQFT Range', 'BHK Size', 'Property Type', 'Type', 'Status', 'Validity', 'Created Date', 'Site Visit', 'Stage', 'Recent Notes', 'CRM/Sales Notes'];
     const rows = leads.map((lead) => [
-      lead.leadNumber || lead.id, fullName(lead), lead.email, lead.phone, lead.secondaryEmail, lead.secondaryPhone,
+      lead.leadNumber || lead.id, fullName(lead), lead.email, lead.phone, lead.secondaryEmail, lead.secondaryPhone, lead.tertiaryPhone,
       lead.project?.name, lead.budget, lead.sqftRange, lead.bhkSize, lead.propertyType, lead.source, lead.status,
       lead.validity, lead.createdAt, lead.siteVisits[0]?.status || '—', lead.rating,
       lead.cpPortalNotes[0]?.text, lead.activities[0]?.description || lead.activities[0]?.subject,
@@ -259,8 +259,8 @@ function Leads({ setError }: { setError: (value: string) => void }) {
   return <>
     <PageHeading eyebrow="YOUR PIPELINE" title="All leads" description="Search, review, and manage leads registered under your account." action={<a href="/leads/new" className="cp-button cp-button-primary">＋ Add New Lead</a>} />
     <div className="cp-panel cp-leads-panel"><div className="cp-list-toolbar"><div className="cp-search"><span>⌕</span><input placeholder="Search name, email, or project…" value={search} onChange={(e) => setSearch(e.target.value)} /></div><select className="cp-toolbar-select" value={stage} onChange={(e) => setStage(e.target.value)}><option value="all">All stages</option><option value="cold">Cold</option><option value="warm">Warm</option><option value="hot">Hot</option><option value="lost">Lost</option></select><button className="cp-button cp-button-outline" onClick={exportCsv}>⇩ Export CSV</button></div>
-      <div className="cp-table-wrap"><table className="cp-table cp-leads-table"><thead><tr><th>LEAD</th><th>PRIMARY CONTACT</th><th>SECONDARY CONTACT</th><th>PROJECT</th><th>BUDGET</th><th>PROPERTY DETAILS</th><th>TYPE</th><th>STATUS</th><th>VALIDITY</th><th>CREATED</th><th>SITE VISIT</th><th>STAGE</th><th>RECENT CP NOTE</th><th>CRM / SALES NOTE</th><th /></tr></thead><tbody>
-        {loading ? <tr><td colSpan={15} className="cp-empty">Loading your leads…</td></tr> : leads.length ? leads.map((lead) => <tr key={lead.id}><td><b>{fullName(lead)}</b><small>{lead.leadNumber || lead.id.slice(-8)}</small></td><td><b>{lead.phone || '—'}</b><small>{lead.email || '—'}</small></td><td><b>{lead.secondaryPhone || '—'}</b><small>{lead.secondaryEmail || '—'}</small></td><td>{lead.project?.name || '—'}</td><td>{lead.budget != null ? money(lead.budget) : '—'}</td><td><b>{lead.bhkSize || '—'}</b><small>{[lead.propertyType, lead.sqftRange].filter(Boolean).join(' · ') || '—'}</small></td><td>{lead.source === 'CHANNEL_PARTNER' ? 'Channel Partner' : lead.source.replaceAll('_', ' ')}</td><td><StatusPill value={lead.status} /></td><td>{lead.validity || '—'}</td><td>{formatDate(lead.createdAt)}</td><td>{lead.siteVisits[0]?.status?.toLowerCase().replaceAll('_', ' ') || '—'}</td><td><span className="cp-stage-label">{lead.rating?.toLowerCase() || 'unrated'}</span></td><td><small>{lead.cpPortalNotes[0]?.text || '—'}</small></td><td><small>{lead.activities[0]?.description || lead.activities[0]?.subject || '—'}</small></td><td><a className="cp-row-arrow" aria-label={`View notes for ${fullName(lead)}`} href={`/leads/${lead.id}`}>→</a></td></tr>) : <tr><td colSpan={15} className="cp-empty">No leads match your search.</td></tr>}
+      <div className="cp-table-wrap"><table className="cp-table cp-leads-table"><thead><tr><th>LEAD</th><th>PRIMARY CONTACT</th><th>SECONDARY CONTACT</th><th>TERTIARY PHONE</th><th>PROJECT</th><th>BUDGET</th><th>PROPERTY DETAILS</th><th>TYPE</th><th>STATUS</th><th>VALIDITY</th><th>CREATED</th><th>SITE VISIT</th><th>STAGE</th><th>RECENT CP NOTE</th><th>CRM / SALES NOTE</th><th /></tr></thead><tbody>
+        {loading ? <tr><td colSpan={16} className="cp-empty">Loading your leads…</td></tr> : leads.length ? leads.map((lead) => <tr key={lead.id}><td><b>{fullName(lead)}</b><small>{lead.leadNumber || lead.id.slice(-8)}</small></td><td><b>{lead.phone || '—'}</b><small>{lead.email || '—'}</small></td><td><b>{lead.secondaryPhone || '—'}</b><small>{lead.secondaryEmail || '—'}</small></td><td>{lead.tertiaryPhone || '—'}</td><td>{lead.project?.name || '—'}</td><td>{lead.budget != null ? money(lead.budget) : '—'}</td><td><b>{lead.bhkSize || '—'}</b><small>{[lead.propertyType, lead.sqftRange].filter(Boolean).join(' · ') || '—'}</small></td><td>{lead.source === 'CHANNEL_PARTNER' ? 'Channel Partner' : lead.source.replaceAll('_', ' ')}</td><td><StatusPill value={lead.status} /></td><td>{lead.validity || '—'}</td><td>{formatDate(lead.createdAt)}</td><td>{lead.siteVisits[0]?.status?.toLowerCase().replaceAll('_', ' ') || '—'}</td><td><span className="cp-stage-label">{lead.rating?.toLowerCase() || 'unrated'}</span></td><td><small>{lead.cpPortalNotes[0]?.text || '—'}</small></td><td><small>{lead.activities[0]?.description || lead.activities[0]?.subject || '—'}</small></td><td><a className="cp-row-arrow" aria-label={`View notes for ${fullName(lead)}`} href={`/leads/${lead.id}`}>→</a></td></tr>) : <tr><td colSpan={16} className="cp-empty">No leads match your search.</td></tr>}
       </tbody></table></div><div className="cp-table-foot">Showing <b>{leads.length}</b> lead{leads.length === 1 ? '' : 's'} assigned to your CP account</div>
     </div>
   </>;
@@ -269,14 +269,27 @@ function Leads({ setError }: { setError: (value: string) => void }) {
 function NewLead({ setError, setNotice, router }: { setError: (value: string) => void; setNotice: (value: string) => void; router: ReturnType<typeof useRouter> }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [saving, setSaving] = useState(false);
-  const initial = { fullName: '', email: '', secondaryEmail: '', phone: '', secondaryPhone: '', projectId: '', budget: '', sqftRange: '', bhkSize: '', propertyType: '', stage: '', remarks: '' };
+  const initial = { fullName: '', email: '', secondaryEmail: '', tertiaryEmail: '', phone: '', secondaryPhone: '', tertiaryPhone: '', projectId: '', leadStatus: 'NEW', leadSource: 'CHANNEL_PARTNER', budget: '', sqftRange: '', bhkSize: '', propertyType: '', stage: '', remarks: '' };
   const [form, setForm] = useState(initial);
+  const submissionId = useRef<string | null>(null);
   useEffect(() => { request<Project[]>('/projects').then(setProjects).catch((e) => setError(e.message)); }, [setError]);
-  const update = (key: keyof typeof initial, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const update = (key: keyof typeof initial, value: string) => {
+    submissionId.current = null;
+    setForm((current) => ({ ...current, [key]: value }));
+  };
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setError(''); setSaving(true);
     try {
-      const result = await request<{ message: string }>('/leads', { method: 'POST', body: JSON.stringify({ ...form, budget: form.budget, stage: form.stage || 'cold', bhkSize: form.bhkSize === 'Select BHK' ? '' : form.bhkSize, propertyType: form.propertyType === 'Select Type' ? '' : form.propertyType }) });
+      submissionId.current ||= crypto.randomUUID();
+      const result = await request<{ message: string; assignmentWarning?: string }>('/leads', { method: 'POST', headers: { 'Idempotency-Key': submissionId.current }, body: JSON.stringify({ ...form, budget: form.budget, stage: form.stage || 'cold', bhkSize: form.bhkSize === 'Select BHK' ? '' : form.bhkSize, propertyType: form.propertyType === 'Select Type' ? '' : form.propertyType }) });
+      if (result.assignmentWarning) {
+        setForm(initial);
+        submissionId.current = null;
+        setError(result.assignmentWarning);
+        return;
+      }
+      submissionId.current = null;
+      setForm(initial);
       setNotice(result.message || 'Lead Registered Successfully');
       router.push('/leads');
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to register lead'); }
@@ -291,17 +304,21 @@ function NewLead({ setError, setNotice, router }: { setError: (value: string) =>
           <Field label="Primary Email"><input type="email" value={form.email} onChange={(e) => update('email', e.target.value)} placeholder="name@example.com" /></Field>
           <Field label="Primary Phone" required><input type="tel" value={form.phone} onChange={(e) => update('phone', e.target.value)} placeholder="Enter phone number" required maxLength={40} /></Field>
           <Field label="Secondary Email"><input type="email" value={form.secondaryEmail} onChange={(e) => update('secondaryEmail', e.target.value)} placeholder="Optional alternate email" /></Field>
+          <Field label="Tertiary Email"><input type="email" value={form.tertiaryEmail} onChange={(e) => update('tertiaryEmail', e.target.value)} placeholder="Optional additional email" /></Field>
           <Field label="Secondary Phone"><input type="tel" value={form.secondaryPhone} onChange={(e) => update('secondaryPhone', e.target.value)} placeholder="Optional alternate phone" /></Field>
+          <Field label="Tertiary Phone"><input type="tel" value={form.tertiaryPhone} onChange={(e) => update('tertiaryPhone', e.target.value)} placeholder="Optional additional phone" /></Field>
           <Field label="Project Name" required><select value={form.projectId} onChange={(e) => update('projectId', e.target.value)} required><option value="">Select a project</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+          <Field label="Lead Status" required><select value={form.leadStatus} onChange={(e) => update('leadStatus', e.target.value)} required><option value="NEW">New</option><option value="INCOMING">Incoming</option><option value="PROSPECT">Prospect</option><option value="SITE_VISIT_SCHEDULED">Site Visit Scheduled</option><option value="SITE_VISIT_HAPPENED">Site Visit Happened</option><option value="BOOKED">Booked</option><option value="LOST">Lost</option></select></Field>
+          <Field label="Lead Source" required><select value={form.leadSource} onChange={(e) => update('leadSource', e.target.value)} required><option value="WEBSITE">Website</option><option value="FACEBOOK">Facebook</option><option value="REFERRAL">Referral</option><option value="COLD_CALL">Cold Call</option><option value="ADVERTISEMENT">Advertisement</option><option value="WALK_IN">Walk In</option><option value="PORTAL">Portal</option><option value="CHANNEL_PARTNER">Channel Partner</option><option value="INSTAGRAM">Instagram</option><option value="TWITTER">Twitter</option><option value="WHATSAPP">WhatsApp</option><option value="YOUTUBE">YouTube</option><option value="OTHER">Other</option></select></Field>
           <Field label="Budget Range" required><input type="number" min="0" step="1" value={form.budget} onChange={(e) => update('budget', e.target.value)} placeholder="Enter budget in INR" required /></Field>
           <Field label="SQFT Range"><input value={form.sqftRange} onChange={(e) => update('sqftRange', e.target.value)} placeholder="e.g. 1200–1500" /></Field>
           <Field label="BHK Size"><select value={form.bhkSize} onChange={(e) => update('bhkSize', e.target.value)}><option value="">Select BHK</option><option>1 BHK</option><option>2 BHK</option><option>3 BHK</option><option>4 BHK</option><option>5+ BHK</option></select></Field>
           <Field label="Property Type"><select value={form.propertyType} onChange={(e) => update('propertyType', e.target.value)}><option value="">Select Type</option><option>Apartment</option><option>Villa</option><option>Plot</option><option>Commercial</option><option>Other</option></select></Field>
-          <Field label="Stage"><select value={form.stage} onChange={(e) => update('stage', e.target.value)}><option value="">Select stage (default Cold)</option><option value="cold">Cold</option><option value="warm">Warm</option><option value="hot">Hot</option><option value="lost">Lost</option></select></Field>
+          <Field label="Lead Rating"><select value={form.stage} onChange={(e) => update('stage', e.target.value)}><option value="">Select rating (default Cold)</option><option value="cold">Cold</option><option value="warm">Warm</option><option value="hot">Hot</option></select></Field>
         </div>
       </div>
       <div className="cp-form-section cp-form-section-last"><div className="cp-form-section-title"><span className="cp-step">02</span><div><h2>Initial remarks</h2><p>Add a note to help your team understand the enquiry.</p></div></div><Field label="Remarks"><textarea rows={4} value={form.remarks} onChange={(e) => update('remarks', e.target.value)} placeholder="Share any useful context about this enquiry…" maxLength={4000} /></Field></div>
-      <div className="cp-form-actions"><button type="button" className="cp-button cp-button-outline" onClick={() => setForm(initial)}>Clear Form</button><button className="cp-button cp-button-primary" disabled={saving}>{saving ? 'Registering…' : 'Add Lead'} <span>→</span></button></div>
+      <div className="cp-form-actions"><button type="button" className="cp-button cp-button-outline" onClick={() => { submissionId.current = null; setForm(initial); }}>Clear Form</button><button className="cp-button cp-button-primary" disabled={saving}>{saving ? 'Registering…' : 'Add Lead'} <span>→</span></button></div>
     </form>
   </>;
 }

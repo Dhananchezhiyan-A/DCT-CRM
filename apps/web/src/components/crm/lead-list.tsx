@@ -16,7 +16,7 @@ import { DataTable } from "@/components/crm/data-table";
 
 import { format } from "date-fns";
 
-import { MoreHorizontal, Eye, Edit, Trash2 } from "lucide-react";
+import { MoreHorizontal, Eye, Edit, Phone, Trash2 } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -93,7 +93,7 @@ export function getLeadColumns({
       cell: ({ row }) => {
         const lead = row.original;
         return (
-          <Link href={`/leads/${lead.id}`} className="font-mono text-sm font-medium text-primary hover:underline">
+          <Link href={`/leads/${lead.id}`} className="font-mono text-sm font-medium text-[#1479a8] hover:text-[#075d91] hover:underline">
             {lead.leadNumber || "—"}
           </Link>
         );
@@ -104,9 +104,22 @@ export function getLeadColumns({
       header: "Name",
       cell: ({ row }) => {
         const lead = row.original;
+        const initials = `${lead.firstName.charAt(0)}${lead.lastName.charAt(0)}`.toUpperCase();
         return (
-          <Link href={`/leads/${lead.id}`} className="hover:underline font-medium">
-            {lead.firstName} {lead.lastName}
+          <Link href={`/leads/${lead.id}`} className="group flex min-w-40 items-center gap-2.5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-semibold text-[#1479a8] ring-1 ring-sky-200">
+              {initials || "?"}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate font-semibold text-[#075d91] group-hover:text-[#1479a8] group-hover:underline">
+                {[lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unnamed lead"}
+              </span>
+              {lead.company && (
+                <span className="block truncate text-[11px] font-normal text-slate-500">
+                  {lead.company}
+                </span>
+              )}
+            </span>
           </Link>
         );
       },
@@ -122,6 +135,12 @@ export function getLeadColumns({
     {
       accessorKey: "phone",
       header: "Phone",
+      cell: ({ row }) => (
+        <span className="inline-flex items-center gap-2 whitespace-nowrap text-[#1479a8]">
+          <Phone className="h-3.5 w-3.5 fill-sky-100" />
+          {row.original.phone || "—"}
+        </span>
+      ),
     },
     {
       accessorKey: "source",
@@ -227,12 +246,13 @@ export function LeadList({
       <DataTable
         columns={columns}
         data={leads}
-          isLoading={isLoading}
-          totalItems={totalItems}
-          currentPage={currentPage}
-          onPageChange={onPageChange}
-          serverPagination
-        />
+        theme="blue"
+        isLoading={isLoading}
+        totalItems={totalItems}
+        currentPage={currentPage}
+        onPageChange={onPageChange}
+        serverPagination
+      />
     </div>
   );
 }

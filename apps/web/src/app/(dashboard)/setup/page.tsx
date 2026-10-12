@@ -40,17 +40,12 @@ const groups = [
     ],
   },
   {
-    title: "Channel Partner Portal",
-    description: "Manage Channel Partner Portal access and credentials.",
+    title: "Custom Portal Details",
+    description: "Manage CP Portal access and GRE forms.",
     items: [
       { label: "CP Portal Accounts", href: "/cp-portal-accounts", icon: KeyRound },
-    ],
-  },
-  {
-    title: "Sites",
-    description: "Open connected portals.",
-    items: [
       { label: "CP Portal", href: "http://localhost:3002/login", icon: Globe, external: true },
+      { label: "GRE Forms", href: "/setup/developer/gre", icon: FileKey2 },
     ],
   },
   {
@@ -67,15 +62,6 @@ const groups = [
     items: [
       { label: "Data Import", href: "/setup/data/import", icon: ClipboardList },
       { label: "Data Export", href: "/setup/data/export", icon: ClipboardList },
-      { label: "Duplicate Management", href: "/setup/data/duplicate-management", icon: ClipboardList },
-      { label: "Recycle Bin", href: "/setup/data/recycle-bin", icon: ClipboardList },
-    ],
-  },
-  {
-    title: "GRE",
-    description: "Create public Guest Registration Enquiry links and review submissions.",
-    items: [
-      { label: "GRE Forms", href: "/setup/developer/gre", icon: FileKey2 },
     ],
   },
 ];

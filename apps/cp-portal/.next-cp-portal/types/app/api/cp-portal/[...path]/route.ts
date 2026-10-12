@@ -1,4 +1,4 @@
-// File: C:\Users\haris\OneDrive\Desktop\CRM-MAIN\hh\apps\cp-portal\src\app\api\cp-portal\[...path]\route.ts
+// File: /Users/dinakarans/Downloads/DCT-CRM 2/apps/cp-portal/src/app/api/cp-portal/[...path]/route.ts
 import * as entry from '../../../../../../src/app/api/cp-portal/[...path]/route.js'
 import type { NextRequest } from 'next/server.js'
 

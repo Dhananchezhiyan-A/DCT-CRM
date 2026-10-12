@@ -6,6 +6,7 @@ import {
   assignCompletedSiteVisitToSalesInTransaction,
   calculateQueueMatchScore,
   getRoundRobinProfileNames,
+  isEligibleRRQueueMember,
   RoundRobinAssignmentService,
 } from '../services/rrQueue';
 
@@ -106,6 +107,45 @@ function memberUserName(user: { firstName?: string | null; lastName?: string | n
   return `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Unknown user';
 }
 
+const RR_QUEUE_HISTORY_LABELS: Record<string, string> = {
+  name: 'Name',
+  projectId: 'Project Assigned',
+  active: 'Active',
+  leadStatus: 'Lead Status',
+  leadSource: 'Lead Source',
+  secondarySource: 'Secondary Source',
+  tertiarySource: 'Tertiary Source',
+  leadPriority: 'Lead Priority',
+  category: 'Category',
+  projectInterested: 'Project Interested',
+  country: 'Country',
+  excludeFromNoSource: 'Excluded No-Source Values',
+  presalesQueue: 'Pre Sales Queue',
+  ownerId: 'Owner',
+  defaultOwnerId: 'Default Owner',
+  leadCount: 'Lead Count',
+  previousId: 'Previous ID',
+  startTime: 'Start Time',
+  endTime: 'End Time',
+};
+
+function queueHistoryValue(
+  field: string,
+  value: unknown,
+  queue: { project?: { name: string } | null; owner?: { firstName: string; lastName: string } | null },
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (field === 'projectId') return queue.project?.name || String(value);
+  if (field === 'ownerId') {
+    return queue.owner ? memberUserName(queue.owner) : 'Unassigned';
+  }
+  if (field === 'active') return value ? 'Active' : 'Inactive';
+  if (field === 'presalesQueue') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) return value.map(String).join(', ') || null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   const queues = await prisma.rRQueue.findMany({
@@ -130,11 +170,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     data: queues.map((queue) => ({
       ...queue,
       noOfUsers: queue.members.filter((member) =>
-        member.activeMember
-        && member.isAvailable
-        && member.isWorking
-        && !member.weekOff
-        && member.user.isActive,
+        isEligibleRRQueueMember(member),
       ).length,
     })),
   });
@@ -184,11 +220,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     data: {
       ...queue,
       noOfUsers: queue.members.filter((member) =>
-        member.activeMember
-        && member.isAvailable
-        && member.isWorking
-        && !member.weekOff
-        && member.user.isActive,
+        isEligibleRRQueueMember(member),
       ).length,
     },
   });
@@ -225,18 +257,57 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       });
       if (!project) return res.status(400).json({ success: false, error: 'Select an active project in this tenant.' });
     }
-    const queue = await prisma.rRQueue.updateMany({
-      where: { id: req.params.id, tenantId: req.tenantId! },
-      data: { ...parsed.data, updatedById: req.user!.id },
+    const queue = await prisma.$transaction(async (tx) => {
+      const where = { id: req.params.id, tenantId: req.tenantId! };
+      const existing = await tx.rRQueue.findFirst({
+        where,
+        include: {
+          project: { select: { id: true, name: true } },
+          owner: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
+      if (!existing) return null;
+
+      const updateData = {
+        ...parsed.data,
+        ...(Object.prototype.hasOwnProperty.call(parsed.data, 'startTime')
+          ? { startTime: parsed.data.startTime ? new Date(parsed.data.startTime) : null }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(parsed.data, 'endTime')
+          ? { endTime: parsed.data.endTime ? new Date(parsed.data.endTime) : null }
+          : {}),
+        updatedById: req.user!.id,
+      };
+      const updated = await tx.rRQueue.update({
+        where: { id: existing.id },
+        data: updateData,
+        include: {
+          project: { select: { id: true, name: true } },
+          owner: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
+      const changedFields = Object.entries(parsed.data).filter(([field, value]) =>
+        JSON.stringify((existing as unknown as Record<string, unknown>)[field] ?? null)
+        !== JSON.stringify(value ?? null),
+      );
+      if (changedFields.length) {
+        const userName = await historyActorName(tx, req);
+        await tx.rRQueueHistory.createMany({
+          data: changedFields.map(([field, value]) => ({
+            tenantId: req.tenantId!,
+            rrQueueId: existing.id,
+            field: RR_QUEUE_HISTORY_LABELS[field] || field,
+            userId: req.user!.id,
+            userName,
+            originalValue: queueHistoryValue(field, (existing as unknown as Record<string, unknown>)[field], existing),
+            newValue: queueHistoryValue(field, value, updated),
+          })),
+        });
+      }
+      return updated;
     });
-    if (!queue.count) return res.status(404).json({ success: false, error: 'Round Robin Queue not found.' });
-    res.json({
-      success: true,
-      data: await prisma.rRQueue.findFirst({
-        where: { id: req.params.id, tenantId: req.tenantId! },
-        include: { project: { select: { id: true, name: true } } },
-      }),
-    });
+    if (!queue) return res.status(404).json({ success: false, error: 'Round Robin Queue not found.' });
+    res.json({ success: true, data: queue });
   } catch (error: any) {
     if (error.code === 'P2002') return res.status(409).json({ success: false, error: 'A queue with this name already exists.' });
     res.status(500).json({ success: false, error: 'Failed to update Round Robin Queue.' });
@@ -336,7 +407,10 @@ router.post('/:id/members', async (req: AuthRequest, res: Response) => {
         if (error?.code === 'P2002') throw new Error('DUPLICATE_MEMBER');
         throw error;
       });
-      await tx.rRQueue.update({ where: { id: queue.id }, data: { noOfUsers: { increment: member.activeMember ? 1 : 0 } } });
+      await tx.rRQueue.update({
+        where: { id: queue.id },
+        data: { noOfUsers: { increment: isEligibleRRQueueMember(member) ? 1 : 0 } },
+      });
       await tx.rRQueueHistory.createMany({
         data: [{
           tenantId: req.tenantId!,
@@ -383,7 +457,7 @@ router.put('/:id/members/:memberId', async (req: AuthRequest, res: Response) => 
     updated = await prisma.$transaction(async (tx) => {
       const member = await tx.rRQueueMember.findFirst({
         where: { id: req.params.memberId, rrQueueId: req.params.id, tenantId: req.tenantId! },
-        include: { user: { select: { id: true, firstName: true, lastName: true, profile: { select: { name: true } } } } },
+        include: { user: { select: { id: true, firstName: true, lastName: true, isActive: true, profile: { select: { name: true } } } } },
       });
       if (!member) return null;
       const nextUserId = parsed.data.userId || member.userId;
@@ -397,7 +471,7 @@ router.put('/:id/members/:memberId', async (req: AuthRequest, res: Response) => 
             isActive: true,
             profile: { name: { in: getRoundRobinProfileNames(nextUserType) } },
           },
-          select: { id: true, firstName: true, lastName: true, profile: { select: { name: true } } },
+          select: { id: true, firstName: true, lastName: true, isActive: true, profile: { select: { name: true } } },
         });
         if (!nextUser) throw new Error('ACTIVE_USER_NOT_FOUND');
       }
@@ -411,6 +485,12 @@ router.put('/:id/members/:memberId', async (req: AuthRequest, res: Response) => 
         ...(parsed.data.weekOff === undefined ? {} : { weekOff: parsed.data.weekOff }),
         ...(parsed.data.maxLeadCapacity === undefined ? {} : { maxLeadCapacity: parsed.data.maxLeadCapacity }),
       } as any;
+      const wasEligible = isEligibleRRQueueMember(member);
+      const willBeEligible = isEligibleRRQueueMember({
+        ...member,
+        ...data,
+        user: nextUser || member.user,
+      });
       const result = Object.keys(data).length
         ? await tx.rRQueueMember.update({ where: { id: member.id }, data })
         : member;
@@ -424,9 +504,30 @@ router.put('/:id/members/:memberId', async (req: AuthRequest, res: Response) => 
       }
       if (parsed.data.activeMember !== undefined && parsed.data.activeMember !== member.activeMember) {
         changes.push({ field: `${prefix}Active Member`, originalValue: member.activeMember ? 'Active' : 'Inactive', newValue: parsed.data.activeMember ? 'Active' : 'Inactive' });
+      }
+      if (parsed.data.isAvailable !== undefined && parsed.data.isAvailable !== member.isAvailable) {
+        changes.push({ field: `${prefix}Available`, originalValue: member.isAvailable ? 'Yes' : 'No', newValue: parsed.data.isAvailable ? 'Yes' : 'No' });
+      }
+      if (parsed.data.isWorking !== undefined && parsed.data.isWorking !== member.isWorking) {
+        changes.push({ field: `${prefix}Working`, originalValue: member.isWorking ? 'Yes' : 'No', newValue: parsed.data.isWorking ? 'Yes' : 'No' });
+      }
+      if (parsed.data.weekOff !== undefined && parsed.data.weekOff !== member.weekOff) {
+        changes.push({ field: `${prefix}Week Off`, originalValue: member.weekOff ? 'Yes' : 'No', newValue: parsed.data.weekOff ? 'Yes' : 'No' });
+      }
+      if (
+        parsed.data.maxLeadCapacity !== undefined
+        && parsed.data.maxLeadCapacity !== member.maxLeadCapacity
+      ) {
+        changes.push({
+          field: `${prefix}Max Lead Capacity`,
+          originalValue: String(member.maxLeadCapacity ?? -1),
+          newValue: String(parsed.data.maxLeadCapacity),
+        });
+      }
+      if (wasEligible !== willBeEligible) {
         await tx.rRQueue.update({
           where: { id: member.rrQueueId },
-          data: { noOfUsers: { increment: parsed.data.activeMember ? 1 : -1 } },
+          data: { noOfUsers: { increment: willBeEligible ? 1 : -1 } },
         });
       }
       if (changes.length) {
@@ -474,7 +575,7 @@ router.delete('/:id/members/:memberId', async (req: AuthRequest, res: Response) 
       }],
     });
     await tx.rRQueueMember.delete({ where: { id: member.id } });
-    if (member.activeMember && member.user.isActive) {
+    if (isEligibleRRQueueMember(member)) {
       await tx.rRQueue.update({ where: { id: member.rrQueueId }, data: { noOfUsers: { decrement: 1 } } });
     }
     return true;
@@ -509,7 +610,7 @@ router.post('/preview', async (req: AuthRequest, res: Response) => {
   if (!parsed.success) return res.status(400).json({ success: false, error: 'Invalid preview payload.' });
 
   const criteria = parsed.data;
-  const queues = await prisma.rRQueue.findMany({ where: { tenantId: req.tenantId! }, orderBy: { createdAt: 'asc' } });
+  const queues = await prisma.rRQueue.findMany({ where: { tenantId: req.tenantId!, active: true }, orderBy: { createdAt: 'asc' } });
   const scores = queues.map((queue) => ({
     queue,
     score: calculateQueueMatchScore(queue as any, {
@@ -525,9 +626,12 @@ router.post('/preview', async (req: AuthRequest, res: Response) => {
   })).sort((left, right) => right.score - left.score);
 
   const selectedQueue = scores.find(({ score }) => score > 0)?.queue ?? scores[0]?.queue ?? null;
-  const preview = selectedQueue
-    ? await RoundRobinAssignmentService.getNextEligibleMember(selectedQueue.id, req.tenantId!, prisma)
-    : { member: null, skipped: ['No matching queue'] };
+  const [preview, queueState] = selectedQueue
+    ? await Promise.all([
+        RoundRobinAssignmentService.getNextEligibleMember(selectedQueue.id, req.tenantId!, prisma),
+        RoundRobinAssignmentService.getQueueState(selectedQueue.id, req.tenantId!, prisma),
+      ])
+    : [{ member: null, skipped: ['No matching queue'] }, null];
 
   res.json({
     success: true,
@@ -535,7 +639,7 @@ router.post('/preview', async (req: AuthRequest, res: Response) => {
       matchingQueues: scores.map(({ queue, score }) => ({ id: queue.id, name: queue.name, score })),
       selectedQueue: selectedQueue ? { id: selectedQueue.id, name: selectedQueue.name, score: scores[0]?.score ?? 0 } : null,
       queueCount: selectedQueue?.leadCount ?? 0,
-      users: selectedQueue ? selectedQueue.noOfUsers : 0,
+      users: queueState?.noOfUsers ?? 0,
       roundRobin: preview,
     },
   });

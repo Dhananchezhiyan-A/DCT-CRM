@@ -17,8 +17,8 @@ const LEAD_LAYOUT_SECTIONS: Section[] = [
     fields: ['company', 'industry', 'annualRevenue', 'numberOfEmployees'],
   },
   {
-    name: 'Lead Details',
-    fields: ['source', 'status', 'rating', 'description'],
+    name: 'Lead Information',
+    fields: ['projectId', 'source', 'status', 'rating', 'description'],
   },
   {
     name: 'Address',
@@ -65,11 +65,13 @@ function buildDefaultSections(objectName: string, fieldNames: string[]): Section
 function mergeLeadLayoutSections(existingSections: Section[]): Section[] {
   const standardFields = new Set(LEAD_LAYOUT_SECTIONS.flatMap((section) => section.fields));
   const standardSectionNames = new Set(LEAD_LAYOUT_SECTIONS.map((section) => section.name));
+  const legacyLeadDetailsName = 'Lead Details';
   const includedCustomFields = new Set<string>();
 
   const standardSections = LEAD_LAYOUT_SECTIONS.map((section) => {
     const sectionExtras = existingSections
-      .filter((existing) => existing.name === section.name)
+      .filter((existing) => existing.name === section.name
+        || (section.name === 'Lead Information' && existing.name === legacyLeadDetailsName))
       .flatMap((existing) => existing.fields)
       .filter((field) => !standardFields.has(field) && !includedCustomFields.has(field));
     sectionExtras.forEach((field) => includedCustomFields.add(field));
@@ -77,7 +79,7 @@ function mergeLeadLayoutSections(existingSections: Section[]): Section[] {
   });
 
   const customSections = existingSections
-    .filter((section) => !standardSectionNames.has(section.name))
+    .filter((section) => !standardSectionNames.has(section.name) && section.name !== legacyLeadDetailsName)
     .map((section) => ({
       ...section,
       fields: section.fields.filter(

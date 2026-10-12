@@ -44,16 +44,15 @@ describe('role-based sidebar matrix', () => {
     expect(nav.map((item) => item.title)).toEqual(['Home', 'Leads', 'Site Visits', 'Reports']);
   });
 
-  it('SVC sees Home, Leads, Site Visits, and Reports', () => {
-    const nav = getNavigationByProfile('SVC', [], withPerms(...presalesPerms), false, false);
-    expect(nav.map((item) => item.title)).toEqual(['Home', 'Leads', 'Site Visits', 'Reports']);
+  it('SVC sees Units when Unit read access is granted', () => {
+    const nav = getNavigationByProfile('SVC', [], withPerms(...presalesPerms, 'UNIT_READ'), false, false);
+    expect(nav.map((item) => item.title)).toEqual(['Home', 'Leads', 'Site Visits', 'Units', 'Reports']);
   });
 
   it('Sales sees Leads, Site Visits, Opportunities, Quotations, Bookings, Payments, and Reports', () => {
     const nav = getNavigationByProfile('Sales', [], withPerms(...salesPerms), false, false);
     expect(nav.map((item) => item.title)).toEqual([
-      'Home', 'Leads', 'Site Visits', 'Opportunities', 'Quotations', 'Bookings', 'Payments',
-      'Reports',
+      'Home', 'Leads', 'Site Visits', 'Opportunities', 'Quotations', 'Bookings', 'Payments', 'Reports',
     ]);
   });
 
@@ -69,17 +68,17 @@ describe('role-based sidebar matrix', () => {
     const nav = getNavigationByProfile('Admin', [], withPerms(...allPerms), false, true);
     expect(nav.map((item) => item.title)).toEqual([
       'Home', 'Leads', 'Site Visits', 'Opportunities', 'Quotations', 'Bookings', 'Payments',
-      'Projects', 'Tasks', 'Reports', 'Setup Home',
+      'Projects', 'Units', 'Tasks', 'Reports', 'Setup Home',
     ]);
     expect(nav.some((item) => item.href === '/profiles/pre-sales')).toBe(false);
     expect(nav.some((item) => item.href === '/profiles/sales')).toBe(false);
     expect(nav.some((item) => item.href === '/profiles/svc')).toBe(false);
   });
 
-  it('Non-admin profiles keep the required modules without showing Units and without affecting admin behavior', () => {
+  it('shows Units to non-admin profiles when Unit read access is granted', () => {
     const nav = getNavigationByProfile('Sales', [], withPerms(...allPerms), false, false);
     expect(nav.some((item) => item.title === 'Home')).toBe(true);
-    expect(nav.some((item) => item.title === 'Units')).toBe(false);
+    expect(nav.some((item) => item.href === '/units')).toBe(true);
     expect(nav.some((item) => item.title === 'Reports')).toBe(true);
     expect(nav.some((item) => item.title === 'Leads')).toBe(true);
     expect(nav.some((item) => item.title === 'Tasks')).toBe(true);
@@ -91,7 +90,7 @@ describe('role-based sidebar matrix', () => {
     const nav = getNavigationByProfile(undefined, [], withPerms(...allPerms), true, true);
     expect(nav.map((item) => item.title)).toEqual([
       'Home', 'Companies', 'Leads', 'Site Visits', 'Opportunities', 'Quotations', 'Bookings',
-      'Payments', 'Projects', 'Tasks', 'Reports', 'Setup Home',
+      'Payments', 'Projects', 'Units', 'Tasks', 'Reports', 'Setup Home',
     ]);
   });
 });

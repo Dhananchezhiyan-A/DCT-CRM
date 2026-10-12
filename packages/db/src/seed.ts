@@ -461,6 +461,7 @@ async function main() {
     { name: 'Task', label: 'Task', pluralLabel: 'Tasks', icon: 'check-square', description: 'Task management' },
     { name: 'FollowUp', label: 'Follow-up', pluralLabel: 'Follow-ups', icon: 'phone', description: 'Manage lead follow-ups' },
     { name: 'Activity', label: 'Activity', pluralLabel: 'Activities', icon: 'activity', description: 'Track CRM activities' },
+    { name: 'CallDetail', label: 'Call Detail', pluralLabel: 'Call Details', icon: 'phone', description: 'Track inbound and outbound calls', isAvailableInNavigation: false },
   ];
 
   const createdObjects: Record<string, any> = {};
@@ -477,6 +478,75 @@ async function main() {
     });
     createdObjects[obj.name] = created;
 
+    if (obj.name === 'CallDetail') {
+      const callFields = [
+        { name: 'name', label: 'Call Details Name', fieldType: 'autoNumber', isSystemField: true, editable: false, displayOrder: 0 },
+        { name: 'callFrom', label: 'Call From', fieldType: 'text', displayOrder: 1 },
+        { name: 'callId', label: 'Call ID', fieldType: 'text', isSystemField: true, editable: false, displayOrder: 2 },
+        { name: 'callTo', label: 'Call To', fieldType: 'text', displayOrder: 3 },
+        { name: 'callType', label: 'Call Type', fieldType: 'picklist', required: true, displayOrder: 4 },
+        { name: 'caseId', label: 'Case', fieldType: 'lookup', lookupObject: 'Lead', displayOrder: 5 },
+        { name: 'createdById', label: 'Created By', fieldType: 'lookup', lookupObject: 'User', isSystemField: true, editable: false, displayOrder: 6 },
+        { name: 'duration', label: 'Duration', fieldType: 'number', isSystemField: true, editable: false, displayOrder: 7 },
+        { name: 'endAt', label: 'End Time', fieldType: 'dateTime', required: true, displayOrder: 8 },
+        { name: 'executiveContactNo', label: 'Executive Contact No', fieldType: 'text', displayOrder: 9 },
+        { name: 'landingNumber', label: 'Landing Number', fieldType: 'text', displayOrder: 10 },
+        { name: 'lastModifiedById', label: 'Last Modified By', fieldType: 'lookup', lookupObject: 'User', isSystemField: true, editable: false, displayOrder: 11 },
+        { name: 'leadId', label: 'Lead', fieldType: 'lookup', lookupObject: 'Lead', required: true, isSystemField: true, editable: false, displayOrder: 12 },
+        { name: 'opportunityId', label: 'Opportunity', fieldType: 'lookup', lookupObject: 'Opportunity', displayOrder: 13 },
+        { name: 'ownerId', label: 'Owner', fieldType: 'lookup', lookupObject: 'User', displayOrder: 14 },
+        { name: 'parentId', label: 'Parent ID', fieldType: 'text', displayOrder: 15 },
+        { name: 'parentUrl', label: 'Parent URL', fieldType: 'url', displayOrder: 16 },
+        { name: 'recordingFile', label: 'Recording File', fieldType: 'url', displayOrder: 17 },
+        { name: 'startAt', label: 'Start Time', fieldType: 'dateTime', required: true, displayOrder: 18 },
+        { name: 'status', label: 'Status', fieldType: 'picklist', displayOrder: 19 },
+        { name: 'notes', label: 'Notes', fieldType: 'longText', displayOrder: 20 },
+      ];
+      for (const field of callFields) {
+        await prisma.fieldDefinition.create({
+          data: {
+            tenantId: tenant.id,
+            objectId: created.id,
+            required: false,
+            searchable: true,
+            sortable: true,
+            filterable: true,
+            visible: true,
+            editable: true,
+            isActive: true,
+            isSystemField: false,
+            isCustomField: false,
+            isStandardField: true,
+            ...field,
+            createdBy: adminUser.id,
+          },
+        });
+      }
+      for (const [fieldName, options] of Object.entries({
+        callType: ['INBOUND', 'OUTBOUND'],
+        status: ['COMPLETED', 'NO_ANSWER', 'BUSY', 'VOICEMAIL', 'CANCELLED'],
+      })) {
+        const field = await prisma.fieldDefinition.findUnique({
+          where: { objectId_name: { objectId: created.id, name: fieldName } },
+          select: { id: true },
+        });
+        if (field) {
+          for (const [displayOrder, value] of options.entries()) {
+            await prisma.picklistValue.create({
+              data: {
+                tenantId: tenant.id,
+                fieldId: field.id,
+                label: value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (letter: string) => letter.toUpperCase()),
+                value,
+                isDefault: displayOrder === 0,
+                displayOrder,
+              },
+            });
+          }
+        }
+      }
+    }
+
     // Create default layout
     await prisma.pageLayout.create({
       data: {
@@ -484,10 +554,16 @@ async function main() {
         objectId: created.id,
         name: 'Default Layout',
         isDefault: true,
-        sections: JSON.stringify([
-          { name: `${obj.label} Information`, fields: ['name', 'description'] },
-          { name: 'Details', fields: [] },
-        ]),
+        sections: JSON.stringify(obj.name === 'CallDetail'
+          ? [
+              { name: 'Call Information', fields: ['name', 'callFrom', 'callId', 'callTo', 'callType', 'duration', 'startAt', 'endAt', 'status'] },
+              { name: 'Related Records', fields: ['caseId', 'createdById', 'lastModifiedById', 'leadId', 'opportunityId', 'ownerId', 'parentId', 'parentUrl'] },
+              { name: 'Details', fields: ['executiveContactNo', 'landingNumber', 'recordingFile', 'notes'] },
+            ]
+          : [
+              { name: `${obj.label} Information`, fields: ['name', 'description'] },
+              { name: 'Details', fields: [] },
+            ]),
         createdBy: adminUser.id,
       },
     });

@@ -1,12 +1,14 @@
 "use client";
 
 import * as React from "react";
+import { normalizePermissionName } from "@dct-crm/shared";
 import { authApi, ApiResponse } from "@/lib/api";
 
 export interface UserProfile {
   id: string;
   name: string;
   description?: string;
+  isAdmin?: boolean;
 }
 
 export interface UserData {
@@ -74,15 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (data.profile) {
           setProfile(data.profile);
         }
-        const profileName = data.profile?.name || '';
-        const userRoles = data.roles || [];
-        setIsAdmin(
-          data.user?.isSuperAdmin ||
-          profileName === 'Admin' || profileName === 'Manager' || profileName === 'CRM Admin' ||
-          profileName === 'System Administrator' || profileName === 'System Administration' ||
-          userRoles.includes('Admin') || userRoles.includes('Manager') || userRoles.includes('CRM Admin') ||
-          userRoles.includes('System Administrator') || userRoles.includes('System Administration')
-        );
+        setIsAdmin(Boolean(data.user?.isSuperAdmin || data.profile?.isAdmin));
       }
     } catch (error) {
       // Not authenticated - will redirect to login via API interceptor
@@ -103,7 +97,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const hasEffectivePermission = React.useCallback(
     (permissionName: string) => {
       if (hasFullAccess) return true;
-      return effectivePermissions.includes(permissionName);
+      const requestedPermission = normalizePermissionName(permissionName);
+      return effectivePermissions.some(
+        (grantedPermission) => normalizePermissionName(grantedPermission) === requestedPermission
+      );
     },
     [effectivePermissions, hasFullAccess]
   );
@@ -152,18 +149,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const hasAnyEffectivePermission = React.useCallback(
     (permissionNames: string[]) => {
       if (hasFullAccess) return true;
-      return permissionNames.some((name) => effectivePermissions.includes(name));
+      return permissionNames.some((name) => hasEffectivePermission(name));
     },
-    [effectivePermissions, hasFullAccess]
+    [hasEffectivePermission, hasFullAccess]
   );
 
   const hasModulePermission = React.useCallback(
     (module: string, action: string) => {
       if (hasFullAccess) return true;
-      const permName = `${module}_${action}`;
-      return effectivePermissions.includes(permName);
+      return hasEffectivePermission(`${module}_${action}`);
     },
-    [effectivePermissions, hasFullAccess]
+    [hasEffectivePermission, hasFullAccess]
   );
 
   return (

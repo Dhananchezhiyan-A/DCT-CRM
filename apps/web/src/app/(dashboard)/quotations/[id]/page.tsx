@@ -29,13 +29,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft,
   Calendar,
-  DollarSign,
   CheckCircle2,
   XCircle,
   Send,
   FileText,
   History,
   StickyNote,
+  Receipt,
 } from "lucide-react";
 
 interface QuotationData {
@@ -44,24 +44,39 @@ interface QuotationData {
   leadName: string;
   projectName: string;
   amount: number;
+  receivedAmount: number;
+  balanceAmount: number;
   status: string;
   validUntil: string;
   createdAt: string;
   updatedAt: string;
+  opportunityId?: string | null;
+  lead?: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    email?: string | null;
+    phone?: string | null;
+  } | null;
+  opportunity?: { id: string; name: string } | null;
+  project?: { id: string; name: string } | null;
+  items?: Array<{ unit?: { id: string; number: string; area?: number | null; price?: number | null; status?: string | null } | null }>;
+  bookings?: Array<{ id: string; number: string; status: string; totalAmount: number }>;
+  receipts?: Array<{ id: string; receiptNumber: string; amount: number; status: string; receiptDate: string; bookingId: string }>;
 }
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "info"> = {
   draft: "secondary",
-  sent: "info",
-  accepted: "success",
+  submitted: "info",
+  approved: "success",
   rejected: "destructive",
   expired: "warning",
 };
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "Draft",
-  sent: "Sent",
-  accepted: "Accepted",
+  submitted: "Submitted",
+  approved: "Approved",
   rejected: "Rejected",
   expired: "Expired",
 };
@@ -88,7 +103,17 @@ export default function QuotationDetailPage() {
         setIsLoading(true);
         const res = await quotationApi.get(params.id as string);
         if (res.data.success && res.data.data) {
-          setQuotation(res.data.data);
+          const record = res.data.data;
+          setQuotation({
+            ...record,
+            quotationNumber: record.number || record.quotationNumber,
+            leadName: record.lead ? `${record.lead.firstName || ""} ${record.lead.lastName || ""}`.trim() : "—",
+            projectName: record.project?.name || "—",
+            amount: Number(record.totalAmount ?? record.amount ?? 0),
+            receivedAmount: Number(record.receivedAmount || 0),
+            balanceAmount: Number(record.balanceAmount ?? record.totalAmount ?? 0),
+            status: String(record.status || "draft").toLowerCase(),
+          });
         } else {
           toast({ title: "Error", description: "Quotation not found", variant: "destructive" as any });
           router.push("/quotations");
@@ -107,7 +132,7 @@ export default function QuotationDetailPage() {
       const res = await quotationApi.submit(params.id as string);
       if (res.data.success) {
         toast({ title: "Success", description: "Quotation submitted" });
-        setQuotation((prev) => (prev ? { ...prev, status: "sent" } : prev));
+        setQuotation((prev) => (prev ? { ...prev, status: "submitted" } : prev));
       }
     } catch {
       toast({ title: "Error", description: "Failed to submit quotation", variant: "destructive" as any });
@@ -119,7 +144,7 @@ export default function QuotationDetailPage() {
       const res = await quotationApi.approve(params.id as string);
       if (res.data.success) {
         toast({ title: "Success", description: "Quotation approved" });
-        setQuotation((prev) => (prev ? { ...prev, status: "accepted" } : prev));
+        setQuotation((prev) => (prev ? { ...prev, status: "approved" } : prev));
       }
     } catch {
       toast({ title: "Error", description: "Failed to approve quotation", variant: "destructive" as any });
@@ -180,7 +205,7 @@ export default function QuotationDetailPage() {
               Submit
             </Button>
           )}
-          {quotation.status === "sent" && (
+          {quotation.status === "submitted" && (
             <>
               <Button onClick={handleApprove}>
                 <CheckCircle2 className="mr-2 h-4 w-4" />
@@ -198,6 +223,8 @@ export default function QuotationDetailPage() {
 
       <RecordSummary items={[
         { label: "Amount", value: formatCurrency(quotation.amount) },
+        { label: "Received", value: formatCurrency(quotation.receivedAmount) },
+        { label: "Balance", value: formatCurrency(quotation.balanceAmount) },
         { label: "Status", value: STATUS_LABEL[quotation.status] || quotation.status },
         { label: "Valid Until", value: formatDate(quotation.validUntil) },
         { label: "Created", value: formatDate(quotation.createdAt) },
@@ -291,6 +318,23 @@ export default function QuotationDetailPage() {
               </CardContent>
             </Card>
           </div>
+          <Card>
+            <CardHeader><CardTitle className="flex items-center gap-2 text-sm font-medium"><Receipt className="h-4 w-4" />Receipts linked to this quotation</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              {!quotation.receipts?.length ? (
+                <p className="text-sm text-muted-foreground">No receipts have been issued for this quotation yet. Receipts are available after a linked payment is verified.</p>
+              ) : quotation.receipts.map((receipt) => (
+                <div key={receipt.id} className="flex flex-wrap items-center justify-between gap-3 border-b pb-3 last:border-0 last:pb-0">
+                  <div>
+                    <Link href={`/receipts/${receipt.id}`} className="font-medium text-primary hover:underline">{receipt.receiptNumber}</Link>
+                    <p className="text-xs text-muted-foreground">{formatDate(receipt.receiptDate)} · {receipt.status}</p>
+                  </div>
+                  <span className="font-semibold">{formatCurrency(Number(receipt.amount))}</span>
+                  <Button variant="outline" size="sm" asChild><Link href={`/receipts/${receipt.id}`}>View Receipt</Link></Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="activity">

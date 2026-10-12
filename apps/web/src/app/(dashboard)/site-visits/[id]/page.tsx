@@ -80,18 +80,20 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   SCHEDULED: "info",
   COMPLETED: "success",
   CANCELLED: "destructive",
+  MISSED: "destructive",
 };
 
 const STATUS_LABEL: Record<string, string> = {
   SCHEDULED: "Scheduled",
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
+  MISSED: "Missed",
 };
 
 const normalizeStatus = (status: string) => {
   const upper = String(status || "").toUpperCase();
   if (upper === "RESCHEDULED") return "SCHEDULED";
-  if (["SCHEDULED", "COMPLETED", "CANCELLED"].includes(upper)) return upper;
+  if (["SCHEDULED", "COMPLETED", "CANCELLED", "MISSED"].includes(upper)) return upper;
   return upper || "SCHEDULED";
 };
 

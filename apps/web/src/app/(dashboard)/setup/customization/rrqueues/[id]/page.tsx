@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { useToast } from "@/hooks/use-toast";
 
 type Tab = "related" | "details";
+type QueueUpdate = Parameters<typeof rrQueueApi.update>[1];
 const MEMBER_USER_TYPES = ["Pre Sales", "Sales", "Post Sales", "Recovery", "Channel Partner", "SVC", "CRM"] as const;
 const MEMBER_PROFILE_NAMES: Record<(typeof MEMBER_USER_TYPES)[number], string[]> = {
   "Pre Sales": ["pre sales", "presales"],
@@ -52,8 +53,8 @@ export default function RRQueueDetailsPage({ params }: { params: { id: string } 
   }, [params.id, toast]);
   React.useEffect(() => { void load(); }, [load]);
 
-  const update = async (patch: Record<string, unknown>) => {
-    try { setSaving(true); await rrQueueApi.update(params.id, patch as any); await load(); setEditing(false); return true; }
+  const update = async (patch: QueueUpdate) => {
+    try { setSaving(true); await rrQueueApi.update(params.id, patch); await load(); setEditing(false); return true; }
     catch (error: any) { toast({ title: "Unable to save queue", description: error?.response?.data?.error || "Try again.", variant: "destructive" as any }); return false; }
     finally { setSaving(false); }
   };
@@ -158,7 +159,7 @@ export default function RRQueueDetailsPage({ params }: { params: { id: string } 
   </div>;
 }
 
-function QueueDetails({ queue, options, users, editing, saving, onSave, onStartEdit, onCancelEdit }: { queue: any; options: { statuses: any[]; sources: any[]; projects: any[] }; users: any[]; editing: boolean; saving: boolean; onSave: (patch: Record<string, unknown>) => Promise<boolean>; onStartEdit: () => void; onCancelEdit: () => void }) {
+function QueueDetails({ queue, options, users, editing, saving, onSave, onStartEdit, onCancelEdit }: { queue: any; options: { statuses: any[]; sources: any[]; projects: any[] }; users: any[]; editing: boolean; saving: boolean; onSave: (patch: QueueUpdate) => Promise<boolean>; onStartEdit: () => void; onCancelEdit: () => void }) {
   const [name, setName] = React.useState(queue.name);
   const [projectId, setProjectId] = React.useState(queue.projectId || "");
   const [active, setActive] = React.useState(Boolean(queue.active));
@@ -196,6 +197,7 @@ function QueueDetails({ queue, options, users, editing, saving, onSave, onStartE
         <EditFieldRow label="Name" required><Input value={name} onChange={(event) => setName(event.target.value)} /></EditFieldRow>
         <EditFieldRow label="Project Assigned" required><select aria-label="Project Assigned" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">--None--</option>{options.projects.map((project) => <option key={project.value} value={project.value}>{project.label}</option>)}</select></EditFieldRow>
         <EditFieldRow label="Active"><input aria-label="Queue active" type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} className="h-4 w-4" /></EditFieldRow>
+        <DualListEditor label="Lead Status" options={options.statuses} value={leadStatus} onChange={setLeadStatus} />
         <EditFieldRow label="No of users" info help="This field is calculated upon save"><span className="text-sm">{queue.noOfUsers ?? 0}</span></EditFieldRow>
         <EditFieldRow label="Lead Count" info><span>{queue.leadCount ?? 0}</span></EditFieldRow>
         <EditFieldRow label="Next sequence position" info><span>{queue.previousId ?? 0}</span></EditFieldRow>

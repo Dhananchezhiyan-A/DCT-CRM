@@ -7,6 +7,14 @@ import { GreSessionStatus, Industry, LeadStatus, Prisma, SiteVisitStatus } from 
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { getNextSiteVisitNumber } from '../services/leadWorkflowExtras';
 import { assignCompletedSiteVisitToSalesInTransaction } from '../services/rrQueue';
+import { createEnquiryInTransactionWithStatus } from '../services/enquiryService';
+import { mergeOperationalLeadCustomFields } from '../services/leadEventTagging';
+import {
+  acquireLeadDuplicateLocks,
+  findLeadDuplicates,
+  normalizeLeadEmail,
+  normalizeLeadPhone,
+} from '../services/leadDuplicateDetection';
 
 const router = Router();
 const publicRouter = Router();
@@ -205,32 +213,36 @@ export function phoneSearchVariants(normalizedPhone: string, countryCode: string
 }
 
 async function findMatchingLeads(
-  client: Pick<typeof prisma, 'lead' | 'siteVisit'>,
+  client: Prisma.TransactionClient | typeof prisma,
   tenantId: string,
   phone: string,
   countryCode: string | null,
   originalPhone?: string | null,
+  alternatePhone?: string | null,
+  emails: Array<{ field: string; value?: string | null }> = [],
+  additionalPhones: Array<{ field: string; value?: string | null; countryCode?: string | null }> = [],
 ) {
-  const variants = phoneSearchVariants(phone, countryCode, originalPhone);
-  const fields = ['phone', 'mobile', 'secondaryPhone', 'tertiaryPhone'] as const;
-  const leads = await client.lead.findMany({
-    where: {
-      tenantId,
-      OR: fields.map((field) => ({ [field]: { in: variants } })),
-    },
-    select: {
-      ...publicLeadSelect,
-    },
+  const duplicates = await findLeadDuplicates(client, tenantId, {
+    phones: [
+      { field: 'phone', value: originalPhone || phone, countryCode },
+      { field: 'secondaryPhone', value: alternatePhone, countryCode },
+      ...additionalPhones,
+    ],
+    emails,
   });
-  const matches = leads.filter((lead) =>
-    [lead.phone, lead.mobile, lead.secondaryPhone, lead.tertiaryPhone]
-      .some((candidate) => normalizeStoredPhone(candidate, countryCode) === phone),
-  );
-  if (matches.length === 0) return matches;
+  const matches = duplicates.length
+    ? await client.lead.findMany({
+        where: { tenantId, id: { in: duplicates.map((match) => match.lead.id) } },
+        select: { ...publicLeadSelect },
+      })
+    : [];
+  if (matches.length === 0) return [];
 
   const visitsByLead = await getScheduledSiteVisits(client, tenantId, matches.map((lead) => lead.id));
   return matches.map((lead) => ({
     ...lead,
+    duplicateMatchFields: duplicates.find((match) => match.lead.id === lead.id)?.matchedFields || [],
+    duplicateMatchAmbiguous: duplicates.find((match) => match.lead.id === lead.id)?.ambiguous || false,
     scheduledSiteVisits: visitsByLead.get(lead.id) || [],
   }));
 }
@@ -382,8 +394,32 @@ publicRouter.post('/:token/sessions', publicLimiter, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Please enter a valid alternate phone number' });
     }
 
-    const matches = await findMatchingLeads(prisma, form.tenantId, normalizedPhone, parsed.data.countryCode, parsed.data.phone);
-    if (matches.length > 1) {
+    const matches = await findMatchingLeads(
+      prisma,
+      form.tenantId,
+      normalizedPhone,
+      parsed.data.countryCode,
+      parsed.data.phone,
+      normalizedAlternatePhone,
+    );
+    if (matches.length > 1 || matches.some((match) => match.duplicateMatchAmbiguous)) {
+      await prisma.auditLog.create({
+        data: {
+          tenantId: form.tenantId,
+          userId: form.createdById,
+          action: 'DUPLICATE_MATCH_AMBIGUOUS',
+          objectType: 'LeadDuplicate',
+          newValues: {
+            leadIds: matches.map((match) => match.id),
+            matchingFields: matches.map((match) => ({
+              leadId: match.id,
+              fields: match.duplicateMatchFields,
+            })),
+            source: 'GRE',
+            action: 'REVIEW_REQUIRED',
+          },
+        },
+      });
       return res.status(409).json({ success: false, error: 'We could not safely match this number to one CRM record. Please contact the team that shared this form.' });
     }
     const sessionToken = randomBytes(32).toString('base64url');
@@ -551,6 +587,19 @@ publicRouter.post('/:token/submit', async (req, res) => {
       }
 
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${context.form.tenantId}:GRE:PHONE:${phone}`}, 0))`;
+      const duplicatePhones = [
+        { field: 'phone', value: session.phone, countryCode: session.phoneCountryCode },
+        { field: 'secondaryPhone', value: draft.lead.secondaryPhone, countryCode: session.phoneCountryCode },
+        { field: 'tertiaryPhone', value: draft.lead.tertiaryPhone, countryCode: session.phoneCountryCode },
+      ];
+      const duplicateEmails = [
+        { field: 'email', value: draft.lead.email },
+        { field: 'secondaryEmail', value: draft.lead.alternateEmail },
+      ];
+      await acquireLeadDuplicateLocks(tx, context.form.tenantId, {
+        phones: duplicatePhones,
+        emails: duplicateEmails,
+      });
       if (normalizedCompanyName) {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${context.form.tenantId}:GRE:COMPANY:${normalizedCompanyName}`}, 0))`;
       }
@@ -559,8 +608,36 @@ publicRouter.post('/:token/submit', async (req, res) => {
       }
 
       submitStage = 'matching existing lead';
-      const matchingLeads = await findMatchingLeads(tx, context.form.tenantId, phone, session.phoneCountryCode, session.phone);
-      if (matchingLeads.length > 1) {
+      const matchingLeads = await findMatchingLeads(
+        tx,
+        context.form.tenantId,
+        phone,
+        session.phoneCountryCode,
+        session.phone,
+        draft.lead.secondaryPhone,
+        duplicateEmails,
+        [{ field: 'tertiaryPhone', value: draft.lead.tertiaryPhone, countryCode: session.phoneCountryCode }],
+      );
+      if (matchingLeads.length > 1 || matchingLeads.some((lead) => lead.duplicateMatchAmbiguous)) {
+        await tx.auditLog.create({
+          data: {
+            tenantId: context.form.tenantId,
+            userId: context.form.createdById,
+            action: 'DUPLICATE_MATCH_AMBIGUOUS',
+            objectType: 'LeadDuplicate',
+            newValues: {
+              leadIds: matchingLeads.map((lead) => lead.id),
+              matchingFields: matchingLeads.map((lead) => ({
+                leadId: lead.id,
+                fields: lead.duplicateMatchFields,
+              })),
+              source: 'GRE',
+              greSessionId: session.id,
+              projectId: draft.lead.projectId || null,
+              action: 'REVIEW_REQUIRED',
+            },
+          },
+        });
         throw Object.assign(new Error('We could not safely match this number to one CRM record. Please contact the team that shared this form.'), { statusCode: 409 });
       }
       const existingLead = matchingLeads[0] ?? null;
@@ -621,10 +698,14 @@ publicRouter.post('/:token/submit', async (req, res) => {
       const leadData = {
         ...(firstName ? { firstName } : {}),
         lastName,
-        ...(draft.lead.secondaryPhone ? { secondaryPhone: draft.lead.secondaryPhone } : {}),
-        ...(draft.lead.tertiaryPhone ? { tertiaryPhone: draft.lead.tertiaryPhone } : {}),
-        ...(draft.lead.email ? { email: draft.lead.email.toLowerCase() } : {}),
-        ...(draft.lead.alternateEmail ? { alternateEmail: draft.lead.alternateEmail.toLowerCase() } : {}),
+        ...(draft.lead.secondaryPhone ? { secondaryPhone: normalizeLeadPhone(draft.lead.secondaryPhone, session.phoneCountryCode)?.e164 } : {}),
+        ...(draft.lead.secondaryPhone ? { mobile: normalizeLeadPhone(draft.lead.secondaryPhone, session.phoneCountryCode)?.e164 } : {}),
+        ...(draft.lead.tertiaryPhone ? { tertiaryPhone: normalizeLeadPhone(draft.lead.tertiaryPhone, session.phoneCountryCode)?.e164 } : {}),
+        ...(draft.lead.email ? { email: normalizeLeadEmail(draft.lead.email) || undefined } : {}),
+        ...(draft.lead.alternateEmail ? { alternateEmail: normalizeLeadEmail(draft.lead.alternateEmail) || undefined } : {}),
+        countryCode: session.phoneCountryCode,
+        ...(draft.lead.secondaryPhone ? { secondaryCountryCode: session.phoneCountryCode } : {}),
+        ...(draft.lead.tertiaryPhone ? { tertiaryCountryCode: session.phoneCountryCode } : {}),
         ...(draft.lead.leadSubSource ? { leadSubSource: draft.lead.leadSubSource } : {}),
         ...(draft.lead.campaign ? { campaign: draft.lead.campaign } : {}),
         ...(draft.lead.leadType ? { leadType: draft.lead.leadType } : {}),
@@ -681,6 +762,13 @@ publicRouter.post('/:token/submit', async (req, res) => {
             company: company?.name || [firstName, lastName].filter(Boolean).join(' '),
             source: 'WEBSITE',
             status: getGreLeadStatus(draft.siteVisit.required),
+            customFields: mergeOperationalLeadCustomFields({}, {
+              source: 'WEBSITE',
+              status: getGreLeadStatus(draft.siteVisit.required),
+              rating: null,
+              description: draft.lead.comments || null,
+              score: 0,
+            }),
             ...leadData,
           },
           select: { id: true, leadNumber: true },
@@ -807,6 +895,82 @@ publicRouter.post('/:token/submit', async (req, res) => {
           completedAt: new Date(),
         },
       });
+
+      const relatedSourceResult = await createEnquiryInTransactionWithStatus(tx, {
+        tenantId: context.form.tenantId,
+        leadId: lead.id,
+        leadType: existingLead ? 'ADDITIONAL' : 'ORIGINAL',
+        enquiryType: existingLead ? 'ADDITIONAL' : 'ORIGINAL',
+        source: 'GRE',
+        subSource: draft.lead.leadSubSource,
+        campaign: draft.lead.campaign,
+        projectId: selectedProjectId,
+        phone: session.phone,
+        secondaryPhone: draft.lead.secondaryPhone
+          ? draft.lead.secondaryPhone
+          : undefined,
+        tertiaryPhone: draft.lead.tertiaryPhone
+          ? draft.lead.tertiaryPhone
+          : undefined,
+        countryCode: session.phoneCountryCode,
+        secondaryCountryCode: draft.lead.secondaryPhone ? session.phoneCountryCode : undefined,
+        tertiaryCountryCode: draft.lead.tertiaryPhone ? session.phoneCountryCode : undefined,
+        email: draft.lead.email,
+        secondaryEmail: draft.lead.alternateEmail,
+        originalSubmissionId: `GRE:${session.id}`,
+        medium: 'GRE',
+        description: draft.lead.comments,
+        details: {
+          greFormId: context.form.id,
+          greFormName: context.form.name,
+          greSessionId: session.id,
+          referenceNumber,
+          siteVisitId: siteVisit?.id || null,
+          siteVisitCategory: isRevisit ? 'REVISIT' : 'FIRST_VISIT',
+          previousLeadStatus: existingLead?.status || null,
+        },
+        userId: context.form.createdById,
+      });
+      const relatedSource = relatedSourceResult.enquiry;
+      if (relatedSourceResult.created) {
+        const currentAttribution = await tx.lead.findUnique({
+          where: { id: lead.id },
+          select: { firstCampaign: true },
+        });
+        await tx.lead.update({
+          where: { id: lead.id },
+          data: {
+            lastSource: 'GRE',
+            lastSubSource: draft.lead.leadSubSource || null,
+            lastCampaign: draft.lead.campaign || null,
+            lastEnquiryAt: new Date(),
+            enquiryCount: { increment: 1 },
+            ...(!currentAttribution?.firstCampaign && draft.lead.campaign
+              ? { firstCampaign: draft.lead.campaign }
+              : {}),
+          },
+        });
+      }
+      if (existingLead) {
+        await tx.auditLog.create({
+          data: {
+            tenantId: context.form.tenantId,
+            userId: context.form.createdById,
+            leadId: lead.id,
+            action: 'DUPLICATE_ENQUIRY_LINKED',
+            objectType: 'Enquiry',
+            objectId: relatedSource.id,
+            newValues: {
+              leadId: lead.id,
+              enquiryId: relatedSource.id,
+              matchingFields: existingLead.duplicateMatchFields,
+              source: 'GRE',
+              projectId: selectedProjectId,
+              action: 'RELATED_SOURCE_LINKED',
+            },
+          },
+        });
+      }
 
       await tx.auditLog.create({
         data: {

@@ -73,9 +73,17 @@ export async function getObjectDefinitions(tenantId: string, includeInactive = f
     orderBy: { label: 'asc' },
   });
 
-  const normalized = objects.map((object) => object._count.fields === 0
-    ? { ...object, _count: { ...object._count, fields: getVirtualStandardFields(object).length } }
-    : object);
+  const callDetailCount = objects.some((object) => object.name === 'CallDetail')
+    ? await prisma.callDetail.count({ where: { tenantId } })
+    : null;
+  const normalized = objects.map((object) => ({
+    ...object,
+    _count: {
+      ...object._count,
+      ...(object._count.fields === 0 ? { fields: getVirtualStandardFields(object).length } : {}),
+      ...(object.name === 'CallDetail' && callDetailCount !== null ? { records: callDetailCount } : {}),
+    },
+  }));
   setCache(tenantId, cacheKey, normalized);
   return normalized;
 }
@@ -103,9 +111,13 @@ export async function getObjectDefinition(tenantId: string, objectName: string) 
   });
 
   if (!object) return object;
-  const normalized = object.fields.length === 0
-    ? { ...object, fields: getVirtualStandardFields(object) }
-    : object;
+  const normalized = {
+    ...object,
+    ...(object.fields.length === 0 ? { fields: getVirtualStandardFields(object) } : {}),
+    ...(object.name === 'CallDetail'
+      ? { _count: { ...object._count, records: await prisma.callDetail.count({ where: { tenantId } }) } }
+      : {}),
+  };
   setCache(tenantId, cacheKey, normalized);
   return normalized;
 }

@@ -1,10 +1,15 @@
 import { Router, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { prisma } from '@dct-crm/db';
 import { z } from 'zod';
 import PDFDocument from 'pdfkit';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { authorize } from '../middleware/authorization';
 import { auditLog } from '../middleware/audit';
+import {
+  calculateQuotationTotals,
+  quotationPaymentPlan,
+} from '../services/commercialFinance';
 import {
   applyScope,
   canAccessLeadId,
@@ -33,6 +38,7 @@ const quotationSchema = z.object({
   notes: z.string().max(2000).optional(),
   taxAmount: z.number().min(0).optional(),
   discount: z.number().min(0).optional(),
+  paymentPlan: z.enum(['10-90', '10-40-50']).optional(),
 });
 
 const updateQuotationSchema = quotationSchema.partial();
@@ -47,6 +53,9 @@ router.get('/', authorize('Quotation', 'read'), async (req: AuthRequest, res: Re
       leadId,
       projectId,
       status,
+      search,
+      startDate,
+      endDate,
       minAmount,
       maxAmount,
       sortBy = 'createdAt',
@@ -60,6 +69,26 @@ router.get('/', authorize('Quotation', 'read'), async (req: AuthRequest, res: Re
     if (leadId) where.leadId = leadId;
     if (projectId) where.projectId = projectId;
     if (status) where.status = status;
+    if (search) {
+      const searchTerm = String(search).trim();
+      where.OR = [
+        { number: { contains: searchTerm, mode: 'insensitive' } },
+        { lead: { is: { OR: [
+          { firstName: { contains: searchTerm, mode: 'insensitive' } },
+          { lastName: { contains: searchTerm, mode: 'insensitive' } },
+          { mobile: { contains: searchTerm, mode: 'insensitive' } },
+          { phone: { contains: searchTerm, mode: 'insensitive' } },
+        ] } } },
+        { project: { is: { name: { contains: searchTerm, mode: 'insensitive' } } } },
+        { items: { some: { unit: { is: { number: { contains: searchTerm, mode: 'insensitive' } } } } } },
+      ];
+    }
+    if (startDate || endDate) {
+      where.createdAt = {
+        ...(startDate ? { gte: new Date(String(startDate)) } : {}),
+        ...(endDate ? { lte: new Date(String(endDate)) } : {}),
+      };
+    }
     if (minAmount) where.totalAmount = { ...where.totalAmount, gte: Number(minAmount) };
     if (maxAmount) where.totalAmount = { ...where.totalAmount, lte: Number(maxAmount) };
     where = applyScope(where, await getScopeClause(req.user!, 'quotation'));
@@ -72,9 +101,27 @@ router.get('/', authorize('Quotation', 'read'), async (req: AuthRequest, res: Re
         orderBy: { [sortBy as string]: sortOrder },
         include: {
           opportunity: { select: { id: true, name: true, stage: true } },
-          lead: { select: { id: true, firstName: true, lastName: true } },
+          lead: { select: { id: true, firstName: true, lastName: true, mobile: true, phone: true } },
           project: { select: { id: true, name: true } },
-          items: true,
+          items: { include: { unit: { select: { id: true, number: true, type: true, area: true } } } },
+          bookings: {
+            select: {
+              id: true,
+              number: true,
+              quotationId: true,
+              status: true,
+              totalAmount: true,
+              payments: {
+                select: {
+                  id: true,
+                  amount: true,
+                  status: true,
+                  receipt: { select: { id: true, receiptNumber: true, status: true } },
+                },
+              },
+            },
+          },
+          receipts: { select: { id: true, receiptNumber: true, amount: true, status: true, receiptDate: true, paymentId: true } },
           _count: { select: { bookings: true, approvals: true } },
         },
       }),
@@ -83,7 +130,18 @@ router.get('/', authorize('Quotation', 'read'), async (req: AuthRequest, res: Re
 
     res.json({
       success: true,
-      data: quotations,
+      data: quotations.map((quotation) => {
+        const payments = quotation.bookings.flatMap((booking) => booking.payments);
+        const receivedAmount = payments
+          .filter((payment) => ['VERIFIED', 'COMPLETED'].includes(payment.status) && payment.receipt?.status !== 'CANCELLED')
+          .reduce((sum, payment) => sum + Number(payment.amount), 0);
+        return {
+          ...quotation,
+          receivedAmount,
+          balanceAmount: Math.max(0, Number(quotation.totalAmount) - receivedAmount),
+          unit: quotation.items.find((item) => item.unit)?.unit || null,
+        };
+      }),
       pagination: {
         page: Number(page),
         limit: Number(limit),
@@ -107,8 +165,39 @@ router.get('/:id', authorize('Quotation', 'read'), async (req: AuthRequest, res:
         opportunity: { select: { id: true, name: true, stage: true, amount: true } },
         lead: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
         project: { select: { id: true, name: true } },
-        items: { include: { unit: { select: { id: true, number: true } } } },
-        bookings: { select: { id: true, number: true, status: true, bookingDate: true } },
+        items: { include: { unit: { select: { id: true, number: true, area: true, price: true, status: true } } } },
+        bookings: {
+          select: {
+            id: true,
+            number: true,
+            quotationId: true,
+            status: true,
+            totalAmount: true,
+            bookingDate: true,
+            payments: {
+              select: {
+                id: true,
+                amount: true,
+                status: true,
+                paymentDate: true,
+                reference: true,
+                receipt: { select: { id: true, receiptNumber: true, status: true, amount: true, receiptDate: true } },
+              },
+            },
+          },
+        },
+        receipts: {
+          select: {
+            id: true,
+            receiptNumber: true,
+            amount: true,
+            status: true,
+            receiptDate: true,
+            bookingId: true,
+            paymentId: true,
+          },
+          orderBy: { receiptDate: 'desc' },
+        },
         approvals: true,
       },
     });
@@ -121,7 +210,18 @@ router.get('/:id', authorize('Quotation', 'read'), async (req: AuthRequest, res:
       return res.status(403).json({ success: false, error: 'You do not have access to this quotation' });
     }
 
-    res.json({ success: true, data: quotation });
+    const receivedAmount = quotation.bookings
+      .flatMap((booking) => booking.payments)
+      .filter((payment) => ['VERIFIED', 'COMPLETED'].includes(payment.status) && payment.receipt?.status !== 'CANCELLED')
+      .reduce((sum, payment) => sum + Number(payment.amount), 0);
+    res.json({
+      success: true,
+      data: {
+        ...quotation,
+        receivedAmount,
+        balanceAmount: Math.max(0, Number(quotation.totalAmount) - receivedAmount),
+      },
+    });
   } catch (error) {
     console.error('Get quotation error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch quotation' });
@@ -156,6 +256,8 @@ router.get('/:id/pdf', authorize('Quotation', 'read'), async (req: AuthRequest, 
       email?: string;
       address?: string;
       paymentPlan?: '10-90' | '10-40-50';
+      additionalCharges?: number;
+      remarks?: string;
     } = {};
     if (quotation.notes?.startsWith(quotationMetadataPrefix)) {
       try {
@@ -201,7 +303,7 @@ router.get('/:id/pdf', authorize('Quotation', 'read'), async (req: AuthRequest, 
       .filter(Boolean).join(', ') || '—';
     const firstUnit = quotation.items.find((item) => item.unit)?.unit;
     const total = quotation.totalAmount;
-    const planIsTenFortyFifty = quotationMetadata.paymentPlan === '10-40-50';
+    const planIsTenFortyFifty = quotationPaymentPlan(quotation.paymentPlan, quotation.notes) === '10-40-50';
     const installments = planIsTenFortyFifty
       ? [
           { label: 'Booking Payment', percentage: 10, dueDays: 0, milestone: 'At booking' },
@@ -231,6 +333,16 @@ router.get('/:id/pdf', authorize('Quotation', 'read'), async (req: AuthRequest, 
     info('Type', firstUnit?.type);
     info('Saleable Area', firstUnit?.area ? `${new Intl.NumberFormat('en-IN').format(firstUnit.area)} sq.ft` : undefined);
     info('Property Description', quotation.items.map((item) => item.description).join(', '));
+
+    const additionalCharges = Number(quotationMetadata.additionalCharges || 0);
+    const lineTotal = quotation.items.reduce((sum, item) => sum + Number(item.totalPrice), 0);
+    section('Price Breakdown');
+    info('Base Unit Price', money(Math.max(0, lineTotal - additionalCharges)));
+    if (additionalCharges > 0) info('Additional Charges', money(additionalCharges));
+    if (quotation.discount) info('Discount', `-${money(quotation.discount)}`);
+    if (quotation.taxAmount) info('GST / Tax', money(quotation.taxAmount));
+    info('Total Quotation Amount', money(quotation.totalAmount));
+    if (quotationMetadata.remarks) info('Remarks', quotationMetadata.remarks);
 
     section(planIsTenFortyFifty ? 'Standard 1-Month Plan' : 'Standard 1-Month 10-90 Plan');
     const columns = [44, 145, 225, 335, 435];
@@ -339,17 +451,19 @@ router.post('/', authorize('Quotation', 'create'), async (req: AuthRequest, res:
       }
     }
 
-    const quotationNumber = `QT-${Date.now().toString(36).toUpperCase()}`;
+    const quotationNumber = `QT-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 8).toUpperCase()}`;
 
-    const items = data.items.map((item) => ({
+    const totals = calculateQuotationTotals(data.items, data.taxAmount, data.discount);
+    const items = data.items.map((item, index) => ({
       unitId: item.unitId,
       description: item.description,
       quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      totalPrice: item.quantity * item.unitPrice,
+      unitPrice: totals.items[index].unitPrice.toNumber(),
+      totalPrice: totals.items[index].totalPrice.toNumber(),
     }));
 
-    const totalAmount = items.reduce((sum, item) => sum + item.totalPrice, 0) + (data.taxAmount || 0) - (data.discount || 0);
+    const totalAmount = totals.total.toNumber();
+    const paymentPlan = quotationPaymentPlan(data.paymentPlan, data.notes);
 
     const quotation = await prisma.$transaction(async (tx) => {
       const created = await tx.quotation.create({
@@ -361,8 +475,9 @@ router.post('/', authorize('Quotation', 'create'), async (req: AuthRequest, res:
           projectId: resolvedProjectId,
           status: 'DRAFT',
           totalAmount,
-          taxAmount: data.taxAmount,
-          discount: data.discount,
+          taxAmount: data.taxAmount === undefined ? undefined : totals.tax.toNumber(),
+          discount: data.discount === undefined ? undefined : totals.discount.toNumber(),
+          paymentPlan,
           validUntil: data.validUntil ? new Date(data.validUntil) : undefined,
           notes: data.notes,
           items: { create: items },
@@ -416,6 +531,7 @@ router.put('/:id', authorize('Quotation', 'edit'), async (req: AuthRequest, res:
 
     const existing = await prisma.quotation.findFirst({
       where: { id: req.params.id, tenantId },
+      include: { items: true },
     });
 
     if (!existing) {
@@ -432,29 +548,44 @@ router.put('/:id', authorize('Quotation', 'edit'), async (req: AuthRequest, res:
 
     const data = updateQuotationSchema.parse(req.body);
 
-    const updateData: any = { ...data };
-    if (data.validUntil) updateData.validUntil = new Date(data.validUntil);
+    const { items: requestedItems, ...fields } = data;
+    const effectiveItems = requestedItems || existing.items.map((item) => ({
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      description: item.description,
+      unitId: item.unitId || undefined,
+    }));
+    const effectiveTax = data.taxAmount ?? existing.taxAmount ?? 0;
+    const effectiveDiscount = data.discount ?? existing.discount ?? 0;
+    const totals = calculateQuotationTotals(effectiveItems, effectiveTax, effectiveDiscount);
+    const updateData: any = {
+      ...fields,
+      totalAmount: totals.total.toNumber(),
+      ...(data.taxAmount !== undefined ? { taxAmount: totals.tax.toNumber() } : {}),
+      ...(data.discount !== undefined ? { discount: totals.discount.toNumber() } : {}),
+      ...(data.validUntil ? { validUntil: new Date(data.validUntil) } : {}),
+    };
+    if (data.paymentPlan !== undefined) updateData.paymentPlan = data.paymentPlan;
 
-    if (data.items) {
-      await prisma.quotationItem.deleteMany({ where: { quotationId: req.params.id } });
-
-      const items = data.items.map((item) => ({
-        quotationId: req.params.id,
-        unitId: item.unitId,
-        description: item.description,
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        totalPrice: item.quantity * item.unitPrice,
-      }));
-
-      updateData.totalAmount = items.reduce((sum: number, item: any) => sum + item.totalPrice, 0) + (data.taxAmount || 0) - (data.discount || 0);
-      updateData.items = { create: items };
-    }
-
-    const quotation = await prisma.quotation.update({
-      where: { id: req.params.id },
-      data: updateData,
-      include: { items: true },
+    const items = requestedItems?.map((item, index) => ({
+      unitId: item.unitId,
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: totals.items[index].unitPrice.toNumber(),
+      totalPrice: totals.items[index].totalPrice.toNumber(),
+    }));
+    const quotation = await prisma.$transaction(async (tx) => {
+      if (items) {
+        await tx.quotationItem.deleteMany({ where: { quotationId: req.params.id } });
+      }
+      return tx.quotation.update({
+        where: { id: req.params.id },
+        data: {
+          ...updateData,
+          ...(items ? { items: { create: items } } : {}),
+        },
+        include: { items: true },
+      });
     });
 
     await auditLog(tenantId, userId, 'UPDATE', 'Quotation', quotation.id, existing, quotation);

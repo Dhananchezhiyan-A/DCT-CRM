@@ -246,4 +246,47 @@ describe('effective profile permissions', () => {
     ]);
     expect(result.every((permission) => permission.source === 'PROFILE')).toBe(true);
   });
+
+  it('exposes Unit object grants from a profile as UNIT permissions', async () => {
+    vi.mocked(prisma.userProfilePermission.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.permissionSet.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.profileObjectPermission.findMany).mockResolvedValue([
+      {
+        object: { name: 'Unit' },
+        canCreate: true,
+        canRead: true,
+        canUpdate: true,
+        canDelete: true,
+        viewAll: false,
+        modifyAll: false,
+      },
+    ] as any);
+
+    const result = await EffectivePermissionService.getProfilePermissions('profile-svc', 'tenant-1');
+
+    expect(result.map((permission) => permission.name)).toEqual([
+      'UNIT_CREATE',
+      'UNIT_READ',
+      'UNIT_UPDATE',
+      'UNIT_DELETE',
+    ]);
+  });
+});
+
+describe('effective permission name aliases', () => {
+  const grantedPermission = (name: string) => ({
+    name,
+    module: 'LEAD',
+    action: 'UPDATE',
+    source: 'PERMISSION_SET' as const,
+    sourceName: 'Sales Access',
+  });
+
+  it.each([
+    ['LEAD_UPDATE', 'LEAD_EDIT'],
+    ['LEAD_READ', 'LEAD_VIEW'],
+    ['LEAD_DELETE', 'LEAD_DELECT'],
+  ])('treats %s and %s as the same permission', (grantedName, requestedName) => {
+    expect(EffectivePermissionService.hasPermissionIn([grantedPermission(grantedName)], requestedName)).toBe(true);
+  });
 });

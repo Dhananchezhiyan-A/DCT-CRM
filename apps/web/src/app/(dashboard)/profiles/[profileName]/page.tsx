@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowLeft, Users, TrendingUp, Briefcase, FolderKanban, LayoutDashboard, FileText, CalendarCheck, Plus, ArrowRight, Pencil } from "lucide-react";
+import { ArrowLeft, Users, TrendingUp, Briefcase, FolderKanban, LayoutDashboard, FileText, CalendarCheck, Plus, ArrowRight, Pencil, Sparkles } from "lucide-react";
 import { analyticsApi, opportunityApi, taskApi, activityApi, homepageApi, profileApi } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
 
@@ -156,6 +156,16 @@ const profileHomeWidgets = [
   { id: "calls-by-purpose", label: "Calls by Purpose" },
   { id: "my-calls-today", label: "My Calls Today" },
 ];
+
+function getProfileKpiStyle(label: string) {
+  const styles: Record<string, { card: string; icon: string; glow: string }> = {
+    "Total Leads": { card: "border-sky-200 bg-gradient-to-br from-white via-white to-sky-50", icon: "bg-gradient-to-br from-sky-400 to-blue-700 text-white", glow: "bg-sky-100/70" },
+    Opportunities: { card: "border-teal-200 bg-gradient-to-br from-white via-white to-teal-50", icon: "bg-gradient-to-br from-cyan-400 to-teal-600 text-white", glow: "bg-teal-100/70" },
+    "Pipeline Value": { card: "border-violet-200 bg-gradient-to-br from-white via-white to-violet-50", icon: "bg-gradient-to-br from-violet-400 to-purple-700 text-white", glow: "bg-violet-100/70" },
+    "Active Tasks": { card: "border-blue-200 bg-gradient-to-br from-white via-white to-blue-50", icon: "bg-gradient-to-br from-blue-400 to-indigo-700 text-white", glow: "bg-blue-100/70" },
+  };
+  return styles[label] || { card: "border-sky-100 bg-white", icon: "bg-blue-600 text-white", glow: "bg-sky-100/50" };
+}
 
 const isProfileHomepageWidget = (id: unknown): id is string =>
   typeof id === "string" && id.length > 0;
@@ -373,29 +383,34 @@ export default function ProfileLandingPage() {
     });
     if (kpi) {
       const Icon = kpi.icon || getModuleIcon(kpi.label);
+      const style = getProfileKpiStyle(kpi.label);
       return (
-        <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">{kpi.label}</div>
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
-              <Icon className="h-5 w-5" />
-            </div>
+        <div className={`relative isolate flex h-full min-h-[136px] items-center justify-between overflow-hidden rounded-xl border p-4 shadow-sm sm:p-5 ${style.card}`}>
+          <div aria-hidden="true" className={`pointer-events-none absolute -bottom-9 right-5 h-24 w-24 rounded-full ${style.glow}`} />
+          <div className="relative z-10">
+            <div className="text-[13px] font-medium text-slate-700">{kpi.label}</div>
+            <div className="mt-2 text-3xl font-bold leading-none tracking-tight text-slate-900">{kpi.value}</div>
           </div>
-          <div className="mt-4 text-xl font-bold tracking-tight text-slate-800">{kpi.value}</div>
+          <div className={`relative z-10 flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-md ring-1 ring-white/40 ${style.icon}`}>
+            <Icon className="h-5 w-5" />
+          </div>
         </div>
       );
     }
 
     if (id === "recent-opportunities") {
       return (
-        <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
-          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Recent Opportunities</h2>
+        <div className="h-full overflow-auto rounded-xl border border-sky-100 bg-white p-4 shadow-sm">
+          <h2 className="mb-4 flex items-center gap-2 text-[16px] font-semibold tracking-tight">
+            <TrendingUp className="h-4 w-4 text-blue-500" />
+            Recent Opportunities
+          </h2>
           {recentOpportunities.length === 0 ? (
             <div className="flex min-h-[120px] items-center justify-center text-muted-foreground">No recent opportunities</div>
           ) : (
             <div className="space-y-3">
               {recentOpportunities.map((opp: any) => (
-                <div key={opp.id} className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">
+                <div key={opp.id} className="flex items-center justify-between rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3 transition-colors hover:border-blue-200 hover:from-blue-50">
                   <div>
                     <div className="font-medium text-slate-800">{opp.name || "Untitled Opportunity"}</div>
                     <div className="text-sm uppercase tracking-wide text-muted-foreground">{opp.stage || "—"}</div>
@@ -410,8 +425,11 @@ export default function ProfileLandingPage() {
     }
     if (id === "pipeline-summary") {
       return (
-        <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
-          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Pipeline Summary</h2>
+        <div className="h-full overflow-auto rounded-xl border border-sky-100 bg-white p-4 shadow-sm">
+          <h2 className="mb-4 flex items-center gap-2 text-[16px] font-semibold tracking-tight">
+            <TrendingUp className="h-4 w-4 text-blue-500" />
+            Pipeline Summary
+          </h2>
           <div className="space-y-4">
             {pipelineStages.length === 0 ? (
               <div className="flex min-h-[120px] items-center justify-center text-muted-foreground">No pipeline data</div>
@@ -421,8 +439,8 @@ export default function ProfileLandingPage() {
                   <span className="capitalize">{stage.stage.toLowerCase().replace(/_/g, " ")}</span>
                   <span>{stage.count} • {formatAmount(stage.amount)}</span>
                 </div>
-                <div className="h-2.5 rounded-full bg-slate-200">
-                  <div className="h-2.5 rounded-full bg-blue-500" style={{ width: `${Math.min(100, Math.max(8, stage.count * 20))}%` }} />
+                <div className="h-2.5 rounded-full bg-blue-100">
+                  <div className="h-2.5 rounded-full bg-gradient-to-r from-blue-700 via-blue-500 to-cyan-400" style={{ width: `${Math.min(100, Math.max(8, stage.count * 20))}%` }} />
                 </div>
               </div>
             ))}
@@ -432,14 +450,14 @@ export default function ProfileLandingPage() {
     }
     if (id === "upcoming-tasks") {
       return (
-        <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
-          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Upcoming Tasks</h2>
+        <div className="h-full overflow-auto rounded-xl border border-sky-100 bg-white p-4 shadow-sm">
+          <h2 className="mb-4 text-[16px] font-semibold tracking-tight text-slate-800">Upcoming Tasks</h2>
           {upcomingTasks.length === 0 ? (
             <div className="flex min-h-[170px] items-center justify-center text-muted-foreground">No upcoming tasks</div>
           ) : (
             <div className="space-y-3">
               {upcomingTasks.map((task: any) => (
-                <div key={task.id} className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">
+                <div key={task.id} className="flex items-center justify-between rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3">
                   <div>
                     <div className="font-medium text-slate-800">{task.title || "Untitled Task"}</div>
                     <div className="text-sm uppercase tracking-wide text-muted-foreground">{task.status || "—"}</div>
@@ -455,14 +473,14 @@ export default function ProfileLandingPage() {
       );
     }
     if (id === "recent-activity") return (
-      <div className="h-full overflow-auto rounded-lg border bg-card p-4 shadow-sm">
-        <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Recent Activity</h2>
+      <div className="h-full overflow-auto rounded-xl border border-sky-100 bg-white p-4 shadow-sm">
+        <h2 className="mb-4 text-[16px] font-semibold tracking-tight text-slate-800">Recent Activity</h2>
         {recentActivities.length === 0 ? (
           <div className="flex min-h-[170px] items-center justify-center text-muted-foreground">No recent activity</div>
         ) : (
           <div className="space-y-3">
             {recentActivities.map((activity: any) => (
-              <div key={activity.id} className="rounded-lg border bg-muted/20 p-3">
+              <div key={activity.id} className="rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3">
                 <div className="text-sm font-medium text-slate-800">{activity.message || "Activity"}</div>
                 <div className="text-xs text-muted-foreground">
                   {activity.type || "Update"} • {activity.createdAt ? formatTimeAgo(activity.createdAt) : "Now"}
@@ -474,7 +492,7 @@ export default function ProfileLandingPage() {
       </div>
     );
     return (
-      <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card p-4 shadow-sm">
+      <div className="flex h-full flex-col overflow-hidden rounded-xl border border-sky-100 bg-white p-4 shadow-sm">
         <h2 className="mb-3 text-[16px] font-semibold tracking-tight">
           {profileHomepageWidgetLabel(id)}
         </h2>
@@ -522,20 +540,23 @@ export default function ProfileLandingPage() {
         </div>
       </div>
 
-      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-4 py-5 shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg border bg-white text-xl font-bold text-slate-700 shadow-sm">
+      <div className="relative isolate flex min-h-[120px] items-center justify-between gap-4 overflow-hidden rounded-xl border border-blue-200 bg-gradient-to-r from-[#2145b8] via-[#2865e7] to-[#35b9e8] px-6 py-5 text-white shadow-md">
+        <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 left-[42%] h-56 w-56 rounded-full border-[18px] border-white/10" />
+        <div className="relative z-10 flex items-center gap-4">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-white/60 bg-white/90 text-xl font-bold text-blue-700 shadow-sm">
             {localPage.title.slice(0, 2).toUpperCase() || "PR"}
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Welcome {localPage.title}</h1>
-            <p className="mt-2 text-sm text-muted-foreground">{localPage.description}</p>
+            <h1 className="text-2xl font-bold tracking-tight text-white">Welcome {localPage.title}</h1>
+            <p className="mt-1 text-sm text-white/85">{localPage.description}</p>
+            <div className="mt-3 h-1 w-9 rounded-full bg-cyan-200" />
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="relative z-10 flex flex-wrap justify-end gap-2">
           {canEditProfileHome && (
             <Button
               variant="outline"
+              className="border-white/50 bg-white/10 text-white hover:bg-white/20 hover:text-white"
               asChild={Boolean(selectedProfileId)}
               disabled={!selectedProfileId}
             >
@@ -552,11 +573,11 @@ export default function ProfileLandingPage() {
               )}
             </Button>
           )}
-          <Button variant="outline" asChild>
+          <Button variant="outline" className="border-white/50 bg-white/10 text-white hover:bg-white/20 hover:text-white" asChild>
             <Link href="/reports">View Reports</Link>
           </Button>
           {hasPermission("Lead", "create") && (
-            <Button asChild>
+            <Button className="bg-slate-950 text-white shadow-md hover:bg-slate-800" asChild>
               <Link href="/leads/new">
                 <Plus className="mr-2 h-4 w-4" />
                 New Lead
@@ -566,9 +587,12 @@ export default function ProfileLandingPage() {
         </div>
       </div>
 
-      <div className="mt-2 flex items-center justify-between text-sm text-muted-foreground">
-        <p>Here&apos;s what&apos;s happening today.</p>
-        <div className="rounded-md border bg-white px-3 py-2 font-medium text-slate-700">
+      <div className="mt-2 flex items-center justify-between text-sm text-slate-600">
+        <p className="flex items-center gap-2 font-semibold text-slate-700">
+          <Sparkles className="h-4 w-4 text-blue-500" />
+          Here&apos;s what&apos;s happening today.
+        </p>
+        <div className="rounded-lg border border-sky-100 bg-white px-3 py-2 font-medium text-blue-700 shadow-sm">
           {localPage.title}&apos;s Home
         </div>
       </div>
@@ -638,7 +662,7 @@ export default function ProfileLandingPage() {
           ? Array.from({ length: selectedComponents.filter((id) =>
               ["total-leads", "opportunities", "pipeline-value", "active-tasks"].includes(id),
             ).length }).map((_, index) => (
-              <div key={index} className="rounded-lg border border-border bg-card p-4 shadow-sm">
+              <div key={index} className="rounded-xl border border-sky-100 bg-gradient-to-br from-white to-sky-50 p-4 shadow-sm">
                 <Skeleton className="h-4 w-24 mb-4" />
                 <Skeleton className="h-8 w-20" />
               </div>
@@ -653,17 +677,17 @@ export default function ProfileLandingPage() {
               return selectedComponents.includes(widgetIds[kpi.label]);
             }).map((kpi) => {
               const Icon = kpi.icon || getModuleIcon(kpi.label);
-              return (
-                <div key={kpi.label} className="rounded-lg border border-border bg-card p-4 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-muted-foreground">{kpi.label}</div>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
-                      <Icon className="h-5 w-5" />
+                const style = getProfileKpiStyle(kpi.label);
+                return (
+                <div key={kpi.label} className={`relative isolate flex min-h-[136px] items-center justify-between overflow-hidden rounded-xl border p-4 shadow-sm sm:p-5 ${style.card}`}>
+                    <div aria-hidden="true" className={`pointer-events-none absolute -bottom-9 right-5 h-24 w-24 rounded-full ${style.glow}`} />
+                    <div className="relative z-10">
+                      <div className="text-[13px] font-medium text-slate-700">{kpi.label}</div>
+                      <div className="mt-2 text-3xl font-bold leading-none tracking-tight text-slate-900">{kpi.value}</div>
                     </div>
-                  </div>
-                  <div className="mt-4 text-xl font-bold tracking-tight text-slate-800">
-                    {kpi.value}
-                  </div>
+                    <div className={`relative z-10 flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-md ring-1 ring-white/40 ${style.icon}`}>
+                        <Icon className="h-5 w-5" />
+                    </div>
                 </div>
               );
             })}
@@ -674,9 +698,12 @@ export default function ProfileLandingPage() {
       <div className="grid gap-6 xl:grid-cols-3">
         {selectedComponents.includes("recent-opportunities") && (
         <div className={selectedComponents.includes("pipeline-summary") ? "xl:col-span-2" : "xl:col-span-3"}>
-          <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+          <div className="rounded-xl border border-sky-100 bg-white p-4 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-[16px] font-semibold tracking-tight">Recent Opportunities</h2>
+              <h2 className="flex items-center gap-2 text-[16px] font-semibold tracking-tight">
+                <TrendingUp className="h-4 w-4 text-blue-500" />
+                Recent Opportunities
+              </h2>
               <Link href="/opportunities" className="inline-flex items-center gap-2 text-sm font-medium text-blue-600">
                 View All <ArrowRight className="h-4 w-4" />
               </Link>
@@ -691,7 +718,7 @@ export default function ProfileLandingPage() {
                   <Link
                     key={opp.id}
                     href={`/opportunities/${opp.id}`}
-                    className="flex items-center justify-between rounded-lg border border-border bg-muted/20 p-4 hover:bg-muted/50 transition-colors"
+                    className="flex items-center justify-between rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-4 transition-colors hover:border-blue-200 hover:from-blue-50"
                   >
                     <div>
                       <div className="text-lg font-medium text-slate-800">{opp.name || "Untitled Opportunity"}</div>
@@ -707,8 +734,11 @@ export default function ProfileLandingPage() {
         )}
 
         {selectedComponents.includes("pipeline-summary") && (
-        <div className={selectedComponents.includes("recent-opportunities") ? "rounded-lg border border-border bg-card p-4 shadow-sm" : "xl:col-span-3 rounded-lg border border-border bg-card p-4 shadow-sm"}>
-          <h2 className="mb-4 text-[16px] font-semibold tracking-tight">Pipeline Summary</h2>
+        <div className={selectedComponents.includes("recent-opportunities") ? "rounded-xl border border-sky-100 bg-white p-4 shadow-sm" : "xl:col-span-3 rounded-xl border border-sky-100 bg-white p-4 shadow-sm"}>
+          <h2 className="mb-4 flex items-center gap-2 text-[16px] font-semibold tracking-tight">
+            <TrendingUp className="h-4 w-4 text-blue-500" />
+            Pipeline Summary
+          </h2>
           <div className="space-y-4">
             {pipelineStages.length === 0 ? (
               <div className="flex min-h-[120px] items-center justify-center text-lg text-muted-foreground">
@@ -721,9 +751,9 @@ export default function ProfileLandingPage() {
                     <span className="capitalize">{stage.stage.toLowerCase().replace(/_/g, " ")}</span>
                     <span>{stage.count} • {formatAmount(stage.amount)}</span>
                   </div>
-                  <div className="h-2.5 rounded-full bg-slate-200">
+                  <div className="h-2.5 rounded-full bg-blue-100">
                     <div
-                      className="h-2.5 rounded-full bg-blue-500"
+                      className="h-2.5 rounded-full bg-gradient-to-r from-blue-700 via-blue-500 to-cyan-400"
                       style={{ width: `${Math.min(100, Math.max(8, stage.count * 20))}%` }}
                     />
                   </div>
@@ -739,7 +769,7 @@ export default function ProfileLandingPage() {
       {!hasSavedHomepage && (selectedComponents.includes("upcoming-tasks") || selectedComponents.includes("recent-activity")) && (
       <div className="grid gap-6 xl:grid-cols-3">
         {selectedComponents.includes("upcoming-tasks") && (
-        <div className={selectedComponents.includes("recent-activity") ? "xl:col-span-2 rounded-lg border border-border bg-card p-4 shadow-sm" : "xl:col-span-3 rounded-lg border border-border bg-card p-4 shadow-sm"}>
+        <div className={selectedComponents.includes("recent-activity") ? "xl:col-span-2 rounded-xl border border-sky-100 bg-white p-4 shadow-sm" : "xl:col-span-3 rounded-xl border border-sky-100 bg-white p-4 shadow-sm"}>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-[16px] font-semibold tracking-tight">Upcoming Tasks</h2>
             <Link href="/tasks" className="text-sm font-medium text-blue-600">View All</Link>
@@ -752,7 +782,7 @@ export default function ProfileLandingPage() {
                 <Link
                   key={task.id}
                   href={`/tasks/${task.id}`}
-                  className="flex items-center justify-between rounded-lg border border-border bg-muted/20 p-4 hover:bg-muted/50 transition-colors"
+                  className="flex items-center justify-between rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-4 transition-colors hover:border-blue-200 hover:from-blue-50"
                 >
                   <div>
                     <div className="text-lg font-medium text-slate-800">{task.title || "Untitled Task"}</div>
@@ -769,7 +799,7 @@ export default function ProfileLandingPage() {
         )}
 
         {selectedComponents.includes("recent-activity") && (
-        <div className={selectedComponents.includes("upcoming-tasks") ? "rounded-lg border border-border bg-card p-4 shadow-sm" : "xl:col-span-3 rounded-lg border border-border bg-card p-4 shadow-sm"}>
+        <div className={selectedComponents.includes("upcoming-tasks") ? "rounded-xl border border-sky-100 bg-white p-4 shadow-sm" : "xl:col-span-3 rounded-xl border border-sky-100 bg-white p-4 shadow-sm"}>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-[16px] font-semibold tracking-tight">Recent Activity</h2>
           </div>
@@ -778,7 +808,7 @@ export default function ProfileLandingPage() {
           ) : (
             <div className="space-y-3">
               {recentActivities.map((activity: any) => (
-                <div key={activity.id} className="rounded-lg border border-border bg-muted/20 p-3">
+                <div key={activity.id} className="rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3">
                   <div className="text-sm font-medium text-slate-800">{activity.message || "Activity"}</div>
                   <div className="text-xs text-muted-foreground">
                     {activity.type || "Update"} • {activity.createdAt ? formatTimeAgo(activity.createdAt) : "Now"}

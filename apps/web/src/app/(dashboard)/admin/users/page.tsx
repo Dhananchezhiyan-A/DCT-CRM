@@ -67,6 +67,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { userApi, profileApi, newPermissionSetApi, userPermissionApi, effectivePermissionApi, permissionApi } from "@/lib/api";
 
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/auth-context";
 
 import {
   Plus,
@@ -127,6 +128,7 @@ const statusColors: Record<string, string> = {
 
 export default function UsersPage() {
   const router = useRouter();
+  const { user: currentUser, refresh: refreshAuth } = useAuth();
   const { toast } = useToast();
 
   const [users, setUsers] = React.useState<User[]>([]);
@@ -353,6 +355,7 @@ export default function UsersPage() {
       setUserPermSets((permissionSetsResponse?.data?.data || []).map((assignment: any) => assignment.permissionSet));
       setUserDirectPerms(directPermissionsResponse?.data?.data || []);
       setEffectivePerms(effectiveResponse?.data?.data || null);
+      if (permTarget.id === currentUser?.id) await refreshAuth();
     } catch (err: any) {
       toast({ title: "Error", description: err?.response?.data?.error || err?.message || "Operation failed", variant: "destructive" as any });
     }
@@ -367,6 +370,7 @@ export default function UsersPage() {
       const effRes = await effectivePermissionApi.getUserPermissions(permTarget.id);
       setUserDirectPerms(dpsRes.data.data || []);
       setEffectivePerms(effRes.data.data || null);
+      if (permTarget.id === currentUser?.id) await refreshAuth();
     } catch (err: any) {
       toast({ title: "Error", description: err?.message || "Operation failed", variant: "destructive" as any });
     }
@@ -381,6 +385,7 @@ export default function UsersPage() {
       const effRes = await effectivePermissionApi.getUserPermissions(permTarget.id);
       setUserDirectPerms(dpsRes.data.data || []);
       setEffectivePerms(effRes.data.data || null);
+      if (permTarget.id === currentUser?.id) await refreshAuth();
     } catch (err: any) {
       toast({ title: "Error", description: err?.message || "Operation failed", variant: "destructive" as any });
     }

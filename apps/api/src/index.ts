@@ -15,6 +15,8 @@ import opportunityRouter from './routes/opportunities';
 import quotationRouter from './routes/quotations';
 import bookingRouter from './routes/bookings';
 import paymentRouter from './routes/payments';
+import installmentRouter from './routes/installments';
+import receiptRouter from './routes/receipts';
 import projectRouter from './routes/projects';
 import unitRouter from './routes/units';
 import { taskRoutes as taskRouter } from './routes/tasks';
@@ -54,8 +56,10 @@ import setupPersonalSettingsRouter from './routes/setup/personal-settings';
 import profileSecurityRouter from './routes/profileSecurity';
 import rrQueueRouter from './routes/rrQueues';
 import notesRouter from './routes/notes';
+import callDetailsRouter from './routes/callDetails';
 import cpPortalRouter from './routes/cpPortal';
 import cpPortalAccountsRouter from './routes/cpPortalAccounts';
+import { normalizeOverdueScheduledItems } from './services/leadWorkflowExtras';
 
 export const createApp = () => {
   const app = express();
@@ -97,6 +101,8 @@ export const createApp = () => {
   app.use('/api/quotations', quotationRouter);
   app.use('/api/bookings', bookingRouter);
   app.use('/api/payments', paymentRouter);
+  app.use('/api/installments', installmentRouter);
+  app.use('/api/receipts', receiptRouter);
   app.use('/api/projects', projectRouter);
   app.use('/api/units', unitRouter);
   app.use('/api/tasks', taskRouter);
@@ -141,6 +147,7 @@ export const createApp = () => {
   app.use('/api/profile-security', profileSecurityRouter);
   app.use('/api/rrqueues', rrQueueRouter);
   app.use('/api/notes', notesRouter);
+  app.use('/api/call-details', callDetailsRouter);
   app.use('/api/gre', greRouter);
 
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -159,6 +166,14 @@ const app = createApp();
 
 if (require.main === module) {
   const PORT = process.env.PORT || 3001;
+  const normalizeOverdueItems = () => {
+    void normalizeOverdueScheduledItems().catch((error) => {
+      console.error('Normalize overdue scheduled items error:', error);
+    });
+  };
+  normalizeOverdueItems();
+  const overdueItemsTimer = setInterval(normalizeOverdueItems, 60_000);
+  overdueItemsTimer.unref();
   app.listen(PORT, () => {
     console.log(`DCT CRM API server running on port ${PORT}`);
   });

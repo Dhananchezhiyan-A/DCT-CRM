@@ -13,9 +13,13 @@ const requireProfileCreateAccess = (req: AuthRequest, res: Response, next: NextF
   return requirePermission('PROFILE_CREATE')(req, res, next);
 };
 
-const leadStatusAccessSchema = z.object({
-  statuses: z.array(z.string()).optional(),
-}).optional();
+const leadStatusAccessSchema = z.union([
+  z.array(z.string()).transform((statuses) => ({ statuses })),
+  z.object({
+    statuses: z.array(z.string()).optional(),
+    recordAccess: z.record(z.enum(['OWN', 'TEAM', 'ALL'])).optional(),
+  }),
+]).optional();
 
 const profileSchema = z.object({
   name: z.string().min(1),
@@ -219,7 +223,12 @@ router.put('/:id', requirePermission('PROFILE_UPDATE'), async (req: AuthRequest,
     delete updateData.permissionSetIds;
 
     if (data.leadStatusAccess !== undefined) {
-      updateData.leadStatusAccess = data.leadStatusAccess ?? undefined;
+      const existingAccess = existingProfile.leadStatusAccess &&
+        typeof existingProfile.leadStatusAccess === 'object' &&
+        !Array.isArray(existingProfile.leadStatusAccess)
+        ? existingProfile.leadStatusAccess as Record<string, unknown>
+        : {};
+      updateData.leadStatusAccess = { ...existingAccess, ...data.leadStatusAccess };
     }
 
     const profile = await prisma.profile.update({

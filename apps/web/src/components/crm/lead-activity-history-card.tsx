@@ -10,6 +10,7 @@ interface LeadActivityHistoryCardProps {
   leadId: string;
   leadName: string;
   refreshKey?: string;
+  canViewAuditHistory?: boolean;
 }
 
 interface ActivityEntry {
@@ -145,7 +146,12 @@ function actorSummary(entry: FeedEntry, userName: string): string {
   return `${userName} updated this lead`;
 }
 
-export default function LeadActivityHistoryCard({ leadId, leadName, refreshKey }: LeadActivityHistoryCardProps) {
+export default function LeadActivityHistoryCard({
+  leadId,
+  leadName,
+  refreshKey,
+  canViewAuditHistory = false,
+}: LeadActivityHistoryCardProps) {
   const [activities, setActivities] = React.useState<ActivityEntry[]>([]);
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -157,34 +163,40 @@ export default function LeadActivityHistoryCard({ leadId, leadName, refreshKey }
     setActivityError(null);
     setHistoryError(null);
 
-    const [activityResult, historyResult] = await Promise.allSettled([
-      leadApi.getActivityHistory(leadId, { page: 1, limit: 100 }),
-      leadApi.getAuditHistory(leadId, { page: 1, limit: 100 }),
+    const [activityResult, historyResult] = await Promise.all([
+      Promise.allSettled([leadApi.getActivityHistory(leadId, { page: 1, limit: 100 })]),
+      canViewAuditHistory
+        ? Promise.allSettled([leadApi.getAuditHistory(leadId, { page: 1, limit: 100 })])
+        : Promise.resolve([]),
     ]);
 
-    if (activityResult.status === "fulfilled" && activityResult.value.data.success) {
-      setActivities(activityResult.value.data.data || []);
+    const activity = activityResult[0];
+    if (activity.status === "fulfilled" && activity.value.data.success) {
+      setActivities(activity.value.data.data || []);
     } else {
       setActivities([]);
       setActivityError(
-        activityResult.status === "rejected"
-          ? activityResult.reason?.response?.data?.error || activityResult.reason?.message || "Activity entries could not be loaded."
-          : activityResult.value.data.error || "Activity entries could not be loaded.",
+        activity.status === "rejected"
+          ? activity.reason?.response?.data?.error || activity.reason?.message || "Activity entries could not be loaded."
+          : activity.value.data.error || "Activity entries could not be loaded.",
       );
     }
 
-    if (historyResult.status === "fulfilled" && historyResult.value.data.success) {
-      setHistory(historyResult.value.data.data || []);
-    } else {
+    const auditHistory = historyResult[0];
+    if (auditHistory?.status === "fulfilled" && auditHistory.value.data.success) {
+      setHistory(auditHistory.value.data.data || []);
+    } else if (auditHistory) {
       setHistory([]);
       setHistoryError(
-        historyResult.status === "rejected"
-          ? historyResult.reason?.response?.data?.error || historyResult.reason?.message || "History entries could not be loaded."
-          : historyResult.value.data.error || "History entries could not be loaded.",
+        auditHistory.status === "rejected"
+          ? auditHistory.reason?.response?.data?.error || auditHistory.reason?.message || "History entries could not be loaded."
+          : auditHistory.value.data.error || "History entries could not be loaded.",
       );
+    } else {
+      setHistory([]);
     }
     setLoading(false);
-  }, [leadId]);
+  }, [canViewAuditHistory, leadId]);
 
   React.useEffect(() => {
     void refresh();
@@ -225,18 +237,18 @@ export default function LeadActivityHistoryCard({ leadId, leadName, refreshKey }
   const hasVisibleSourceError = Boolean(activityError || historyError);
 
   return (
-    <Card className="my-0 box-border w-full rounded-md border shadow-sm">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 gap-3 p-3">
+    <Card className="my-0 box-border w-full rounded-md border-slate-200 shadow-sm">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 gap-3 border-b border-slate-200 bg-white p-3">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-sky-500">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#13a9d2]">
             <History className="h-5 w-5 text-white" aria-hidden="true" />
           </span>
-          <h2 className="text-base font-semibold">Lead Activity and History</h2>
+          <h2 className="text-[12px] font-semibold">Lead Activity and History</h2>
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0 rounded-full bg-sky-700 text-white hover:bg-sky-800 hover:text-white"
+            className="h-8 w-8 shrink-0 rounded-full bg-[#08749f] text-white hover:bg-[#066487] hover:text-white"
             aria-label="Refresh lead activity and history"
             onClick={() => void refresh()}
             disabled={loading}
@@ -255,7 +267,7 @@ export default function LeadActivityHistoryCard({ leadId, leadName, refreshKey }
           ) : entries.length ? (
             groupedEntries.map(([month, monthEntries]) => (
               <section key={month} className="mb-2">
-                <div className="sticky top-0 z-10 flex items-center gap-1 border-b bg-background py-1.5 text-[11px] text-muted-foreground">
+                <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-sky-100 bg-white py-1.5 text-[11px] text-blue-700">
                   <ChevronDown className="h-3 w-3" aria-hidden="true" />
                   <span className="font-medium">{month}</span>
                 </div>

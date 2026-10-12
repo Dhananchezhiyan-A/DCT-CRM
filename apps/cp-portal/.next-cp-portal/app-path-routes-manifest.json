@@ -1,1 +1,1 @@
-{"/_not-found/page":"/_not-found","/page":"/","/leads/page":"/leads","/leads/new/page":"/leads/new","/projects/page":"/projects","/login/page":"/login","/leads/[id]/page":"/leads/[id]","/reset-password/page":"/reset-password","/api/cp-portal/[...path]/route":"/api/cp-portal/[...path]"}
+{"/_not-found/page":"/_not-found","/leads/[id]/page":"/leads/[id]","/leads/new/page":"/leads/new","/leads/page":"/leads","/login/page":"/login","/page":"/","/projects/page":"/projects","/reset-password/page":"/reset-password","/api/cp-portal/[...path]/route":"/api/cp-portal/[...path]"}

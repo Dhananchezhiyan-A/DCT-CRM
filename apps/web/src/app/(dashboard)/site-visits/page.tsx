@@ -29,7 +29,7 @@ interface SiteVisit {
   leadName: string;
   projectName: string;
   visitDate: string;
-  status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  status: "SCHEDULED" | "COMPLETED" | "CANCELLED" | "MISSED";
   assignedTo: string;
   leadNumber?: string;
   createdAt: string;
@@ -50,6 +50,9 @@ const timingBadge = (
   visit: SiteVisit
 ): { label: string; className: string } | null => {
   if (visit.status === "COMPLETED") return null;
+  if (visit.status === "MISSED") {
+    return { label: "Missed", className: "bg-red-100 text-red-800" };
+  }
   if (visit.status === "CANCELLED") {
     return visit.cancellationReason?.startsWith("Automatically cancelled")
       ? { label: "Overdue (Auto-cancelled)", className: "bg-amber-100 text-amber-800" }
@@ -69,12 +72,14 @@ const statusColors: Record<string, string> = {
   SCHEDULED: "bg-blue-100 text-blue-800",
   COMPLETED: "bg-green-100 text-green-800",
   CANCELLED: "bg-red-100 text-red-800",
+  MISSED: "bg-red-100 text-red-800",
 };
 
 const statusLabels: Record<string, string> = {
   SCHEDULED: "Scheduled",
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
+  MISSED: "Missed",
 };
 
 const columns: ColumnDef<SiteVisit>[] = [
@@ -313,6 +318,7 @@ export default function SiteVisitsPage() {
                 { label: "Scheduled", value: "SCHEDULED" },
                 { label: "Completed", value: "COMPLETED" },
                 { label: "Cancelled", value: "CANCELLED" },
+                { label: "Missed", value: "MISSED" },
               ]}
               placeholder="All Statuses"
             />

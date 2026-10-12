@@ -649,6 +649,8 @@ export default function ObjectSettingsPage() {
                               <Badge variant="secondary" className="text-xs">System</Badge>
                             ) : field.isStandardField ? (
                               <Badge variant="default" className="text-xs bg-blue-600">Standard</Badge>
+                            ) : field.isCustomField ? (
+                              <Badge variant="default" className="text-xs bg-green-600">Custom</Badge>
                             ) : field.isActive ? (
                               <Badge variant="default" className="text-xs bg-green-600">Active</Badge>
                             ) : (

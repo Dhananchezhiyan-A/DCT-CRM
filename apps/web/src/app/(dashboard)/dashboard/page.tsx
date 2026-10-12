@@ -17,6 +17,7 @@ import {
   Calendar,
   Plus,
   ArrowRight,
+  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { analyticsApi, opportunityApi, taskApi, activityApi, homepageApi } from "@/lib/api";
@@ -285,30 +286,33 @@ export default function HomePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-4 py-5 shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-white border shadow-sm text-xl font-bold text-slate-700">
+      <div className="relative isolate flex min-h-[120px] items-center justify-between gap-4 overflow-hidden rounded-xl border border-blue-200 bg-gradient-to-r from-[#2145b8] via-[#2865e7] to-[#35b9e8] px-6 py-5 text-white shadow-md">
+        <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 left-[42%] h-56 w-56 rounded-full border-[18px] border-white/10" />
+        <div className="relative z-10 flex items-center gap-4">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-white/60 bg-white/90 text-xl font-bold text-blue-700 shadow-sm">
             {userName.split(" ").map((part) => part[0] || "").join("").slice(0, 2).toUpperCase() || "U"}
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">{pageTitle}</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-white">{pageTitle}</h1>
+            <p className="mt-1 text-sm text-white/85">Profile overview and operational summary.</p>
+            <div className="mt-3 h-1 w-9 rounded-full bg-cyan-200" />
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="relative z-10 flex flex-wrap justify-end gap-2">
           {isSuperAdmin && (
-            <Button variant="outline" asChild>
+            <Button variant="outline" className="border-white/50 bg-white/10 text-white hover:bg-white/20 hover:text-white" asChild>
               <Link href="/admin/customize-home/create">
                 Add Component
               </Link>
             </Button>
           )}
-          <Button variant="outline" asChild>
+          <Button variant="outline" className="border-white/50 bg-white/10 text-white hover:bg-white/20 hover:text-white" asChild>
             <Link href="/reports">
               View Reports
             </Link>
           </Button>
           {hasPermission("Lead", "create") && (
-            <Button asChild>
+            <Button className="bg-slate-950 text-white shadow-md hover:bg-slate-800" asChild>
               <Link href="/leads/new">
                 <Plus className="mr-2 h-4 w-4" />
                 New Lead
@@ -318,9 +322,12 @@ export default function HomePage() {
         </div>
       </div>
 
-      <div className="mt-2 flex items-center justify-between text-sm text-muted-foreground">
-        <p>Here&apos;s what&apos;s happening today.</p>
-        <div className="rounded-md border bg-white px-3 py-2 font-medium text-slate-700">
+      <div className="mt-2 flex items-center justify-between text-sm text-slate-600">
+        <p className="flex items-center gap-2 font-semibold text-slate-700">
+          <Sparkles className="h-4 w-4 text-blue-500" />
+          Here&apos;s what&apos;s happening today.
+        </p>
+        <div className="rounded-lg border border-sky-100 bg-white px-3 py-2 font-medium text-blue-700 shadow-sm">
           {homepageName}
         </div>
       </div>
@@ -367,9 +374,12 @@ export default function HomePage() {
 
       {(showsWidget("recent-opportunities") || showsWidget("pipeline-summary")) && <div className={hasCustomLayout ? "contents" : "grid gap-6 lg:grid-cols-3"}>
         {showsWidget("recent-opportunities") && <div className={hasCustomLayout ? "absolute" : "lg:col-span-2"} style={widgetStyle("recent-opportunities")}>
-          <Card>
+          <Card className="rounded-xl border-sky-100 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Recent Opportunities</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-blue-500" />
+                Recent Opportunities
+              </CardTitle>
               <Button variant="ghost" size="sm" asChild>
                 <Link href="/opportunities">
                   View All
@@ -389,7 +399,7 @@ export default function HomePage() {
               ) : (
                 <div className="space-y-4">
                   {recentOpportunities.map((opp: any) => (
-                    <div key={opp.id} className="flex items-center justify-between p-3 rounded-lg border hover:bg-accent/50 transition-colors">
+                    <div key={opp.id} className="flex items-center justify-between rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3 transition-colors hover:border-blue-200 hover:from-blue-50">
                       <div>
                         <Link href={`/opportunities/${opp.id}`} className="font-medium hover:underline">
                           {opp.name || "Untitled"}
@@ -414,7 +424,7 @@ export default function HomePage() {
           ) : pipelineStages.length > 0 ? (
             <PipelineSummary stages={pipelineStages} />
           ) : (
-            <Card>
+            <Card className="rounded-xl border-sky-100 shadow-sm">
               <CardContent className="p-6 text-center text-muted-foreground text-sm">
                 No pipeline data
               </CardContent>
@@ -425,7 +435,7 @@ export default function HomePage() {
 
       {(showsWidget("upcoming-tasks") || showsWidget("recent-activity")) && <div className={hasCustomLayout ? "contents" : "grid gap-6 lg:grid-cols-3"}>
         {showsWidget("upcoming-tasks") && <div className={hasCustomLayout ? "absolute" : "lg:col-span-2"} style={widgetStyle("upcoming-tasks")}>
-          <Card>
+          <Card className="rounded-xl border-sky-100 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Upcoming Tasks</CardTitle>
               <Link href="/tasks" className="text-sm text-primary hover:underline">
@@ -444,7 +454,7 @@ export default function HomePage() {
               ) : (
                 <div className="space-y-3">
                   {upcomingTasks.map((task: any) => (
-                    <div key={task.id} className="flex items-center justify-between rounded-lg border p-3">
+                    <div key={task.id} className="flex items-center justify-between rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3">
                       <div>
                         <p className="font-medium">{task.title || "Untitled task"}</p>
                         <p className="text-sm text-muted-foreground">{task.assigneeName || "Unassigned"}</p>
@@ -464,7 +474,7 @@ export default function HomePage() {
         </div>}
 
         {showsWidget("recent-activity") && <div className={hasCustomLayout ? "absolute h-full" : ""} style={widgetStyle("recent-activity")}>
-          <Card>
+          <Card className="rounded-xl border-sky-100 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Recent Activity</CardTitle>
             </CardHeader>
@@ -480,7 +490,7 @@ export default function HomePage() {
               ) : (
                 <div className="space-y-3">
                   {recentActivities.map((activity: any) => (
-                    <div key={activity.id} className="flex items-center gap-3 rounded-lg border p-3">
+                    <div key={activity.id} className="flex items-center gap-3 rounded-lg border border-sky-100 bg-gradient-to-r from-blue-50/80 to-white p-3">
                       <div className={`h-2.5 w-2.5 rounded-full ${getActivityTypeColor(activity.type)}`} />
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium truncate">{activity.message || "Activity"}</p>

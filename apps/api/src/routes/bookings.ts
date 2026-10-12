@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { authorize } from '../middleware/authorization';
 import { auditLog } from '../middleware/audit';
+import { buildInstallmentDrafts, money, quotationPaymentPlan } from '../services/commercialFinance';
 import {
   applyScope,
   canAccessBooking,
@@ -40,6 +41,7 @@ router.get('/', authorize('Booking', 'read'), async (req: AuthRequest, res: Resp
     const {
       page = 1,
       limit = 20,
+      leadId,
       unitId,
       projectId,
       status,
@@ -52,6 +54,7 @@ router.get('/', authorize('Booking', 'read'), async (req: AuthRequest, res: Resp
     const skip = (Number(page) - 1) * Number(limit);
 
     let where: any = { tenantId };
+    if (leadId) where.leadId = leadId;
     if (unitId) where.unitId = unitId;
     if (projectId) where.projectId = projectId;
     if (status) where.status = status;
@@ -134,6 +137,9 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
   try {
     const { tenantId, id: userId } = req.user!;
     const data = bookingSchema.parse(req.body);
+    if (data.status && !['PENDING', 'CONFIRMED'].includes(data.status)) {
+      return res.status(400).json({ success: false, error: 'New bookings must be pending or confirmed' });
+    }
 
     const [lead, opportunity, quotation, project, unit] = await Promise.all([
       data.leadId
@@ -148,7 +154,17 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
       data.quotationId
         ? prisma.quotation.findFirst({
             where: { id: data.quotationId, tenantId },
-            select: { id: true, tenantId: true, leadId: true, opportunityId: true, projectId: true },
+            select: {
+              id: true,
+              tenantId: true,
+              leadId: true,
+              opportunityId: true,
+              projectId: true,
+              totalAmount: true,
+              status: true,
+              paymentPlan: true,
+              notes: true,
+            },
           })
         : null,
       prisma.project.findFirst({
@@ -188,15 +204,21 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
     if (data.quotationId && !quotation) {
       return res.status(404).json({ success: false, error: 'Quotation not found' });
     }
+    if (quotation && ['REJECTED', 'EXPIRED'].includes(quotation.status)) {
+      return res.status(400).json({ success: false, error: 'Cannot book against a rejected or expired quotation' });
+    }
     if (quotation && !(await canAccessQuotation(req.user!, quotation))) {
       return res.status(403).json({ success: false, error: 'You do not have access to the linked quotation' });
     }
     if (quotation && (
-      (quotation.leadId && data.leadId && quotation.leadId !== data.leadId) ||
-      (quotation.opportunityId && data.opportunityId && quotation.opportunityId !== data.opportunityId) ||
+      (quotation.leadId && quotation.leadId !== data.leadId) ||
+      (quotation.opportunityId && quotation.opportunityId !== data.opportunityId) ||
       (quotation.projectId && quotation.projectId !== data.projectId)
     )) {
       return res.status(400).json({ success: false, error: 'Booking references do not match the linked quotation' });
+    }
+    if (quotation && !money(quotation.totalAmount).eq(money(data.totalAmount))) {
+      return res.status(400).json({ success: false, error: 'Booking amount must match the linked quotation amount' });
     }
     if (data.ownerId && !(await prisma.user.count({ where: { id: data.ownerId, tenantId, isActive: true } }))) {
       return res.status(400).json({ success: false, error: 'Booking owner is invalid for this tenant' });
@@ -208,6 +230,13 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
     const bookingNumber = data.number || `BK-${Date.now().toString(36).toUpperCase()}`;
 
     const booking = await prisma.$transaction(async (tx) => {
+      const reservation = await tx.unit.updateMany({
+        where: { id: data.unitId, tenantId, projectId: data.projectId, status: 'AVAILABLE' },
+        data: { status: data.status === 'CONFIRMED' ? 'BOOKED' : 'RESERVED' },
+      });
+      if (reservation.count !== 1) {
+        throw new Error('Unit is no longer available; refresh inventory and retry');
+      }
       const created = await tx.booking.create({
         data: {
           tenantId,
@@ -231,6 +260,27 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
           project: { select: { id: true, name: true } },
         },
       });
+      const paymentPlan = quotationPaymentPlan(quotation?.paymentPlan, quotation?.notes);
+      if (quotation && paymentPlan) {
+        const installments = buildInstallmentDrafts(paymentPlan, created.totalAmount, created.bookingDate);
+        const scheduleTotal = installments.reduce((sum, installment) => sum.plus(installment.scheduledAmount), money(0));
+        if (!scheduleTotal.eq(money(created.totalAmount))) {
+          throw new Error('Installment schedule does not reconcile with the booking amount');
+        }
+        await tx.quotationInstallment.createMany({
+          data: installments.map((installment) => ({
+            tenantId,
+            quotationId: quotation.id,
+            bookingId: created.id,
+            sequenceNumber: installment.sequenceNumber,
+            name: installment.name,
+            description: installment.description,
+            percentage: installment.percentage,
+            scheduledAmount: installment.scheduledAmount,
+            dueDate: installment.dueDate,
+          })),
+        });
+      }
       await tx.auditLog.create({
         data: {
           tenantId,
@@ -240,6 +290,18 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
           objectType: 'Booking',
           objectId: created.id,
           newValues: { number: bookingNumber, unitId: data.unitId, totalAmount: data.totalAmount },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          bookingId: created.id,
+          action: 'UPDATE',
+          objectType: 'Unit',
+          objectId: data.unitId,
+          oldValues: { status: 'AVAILABLE' },
+          newValues: { status: data.status === 'CONFIRMED' ? 'BOOKED' : 'RESERVED', bookingId: created.id },
         },
       });
       if (opportunity && !['CLOSED_WON', 'CLOSED_LOST'].includes(opportunity.stage)) {
@@ -288,6 +350,9 @@ router.post('/', authorize('Booking', 'create'), async (req: AuthRequest, res: R
   } catch (error: any) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ success: false, error: error.errors[0].message });
+    }
+    if (error instanceof Error && error.message === 'Unit is no longer available; refresh inventory and retry') {
+      return res.status(409).json({ success: false, error: error.message });
     }
     console.error('Create booking error:', error);
     res.status(500).json({ success: false, error: 'Failed to create booking' });
@@ -346,6 +411,10 @@ router.patch('/:id/confirm', authorize('Booking', 'edit'), async (req: AuthReque
 
     const existing = await prisma.booking.findFirst({
       where: { id: req.params.id, tenantId },
+      include: {
+        unit: { select: { id: true, status: true } },
+        quotation: { select: { id: true, status: true, totalAmount: true, paymentPlan: true, notes: true } },
+      },
     });
 
     if (!existing) {
@@ -361,16 +430,77 @@ router.patch('/:id/confirm', authorize('Booking', 'edit'), async (req: AuthReque
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const booking = await tx.booking.update({
-        where: { id: req.params.id },
+      const otherActiveBookings = await tx.booking.count({
+        where: {
+          id: { not: existing.id },
+          tenantId,
+          unitId: existing.unitId,
+          status: { in: ['PENDING', 'CONFIRMED'] },
+        },
+      });
+      if (otherActiveBookings > 0) {
+        throw new Error('Another active booking already holds this unit');
+      }
+      const unitReservation = await tx.unit.updateMany({
+        where: {
+          id: existing.unitId,
+          tenantId,
+          projectId: existing.projectId,
+          status: { in: ['AVAILABLE', 'RESERVED'] },
+        },
+        data: { status: 'BOOKED' },
+      });
+      if (unitReservation.count !== 1) {
+        throw new Error('Unit is no longer available; refresh inventory and retry');
+      }
+      const bookingStatus = await tx.booking.updateMany({
+        where: { id: existing.id, tenantId, status: 'PENDING' },
         data: { status: 'CONFIRMED' },
       });
+      if (bookingStatus.count !== 1) {
+        throw new Error('Booking status changed; refresh and retry');
+      }
+      const booking = await tx.booking.findFirst({
+        where: { id: existing.id, tenantId },
+      });
+      if (!booking) throw new Error('Booking not found after confirmation');
+
+      const quotation = existing.quotation;
+      const plan = quotation ? quotationPaymentPlan(quotation.paymentPlan, quotation.notes) : null;
+      if (plan && quotation) {
+        if (!money(quotation.totalAmount).eq(money(booking.totalAmount))) {
+          throw new Error('Booking amount does not reconcile with the approved quotation');
+        }
+        const existingScheduleCount = await tx.quotationInstallment.count({
+          where: { tenantId, bookingId: booking.id },
+        });
+        if (existingScheduleCount === 0) {
+          const installments = buildInstallmentDrafts(plan, booking.totalAmount, booking.bookingDate);
+          const scheduleTotal = installments.reduce((sum, installment) => sum.plus(installment.scheduledAmount), money(0));
+          if (!scheduleTotal.eq(money(booking.totalAmount))) {
+            throw new Error('Installment schedule does not reconcile with the booking amount');
+          }
+          await tx.quotationInstallment.createMany({
+            data: installments.map((installment) => ({
+              tenantId,
+              quotationId: quotation.id,
+              bookingId: booking.id,
+              sequenceNumber: installment.sequenceNumber,
+              name: installment.name,
+              description: installment.description,
+              percentage: installment.percentage,
+              scheduledAmount: installment.scheduledAmount,
+              dueDate: installment.dueDate,
+            })),
+          });
+        }
+      }
 
       if (existing.leadId) {
-        const lead = await tx.lead.findUnique({ where: { id: existing.leadId } });
+        const lead = await tx.lead.findFirst({ where: { id: existing.leadId, tenantId } });
         if (lead && lead.status === 'SITE_VISIT_HAPPENED') {
-          await tx.lead.update({
-            where: { id: existing.leadId },
+          await tx.lead.updateMany({
+            where: { id: existing.leadId, tenantId },
             data: { status: 'BOOKED' },
           });
 
@@ -389,13 +519,37 @@ router.patch('/:id/confirm', authorize('Booking', 'edit'), async (req: AuthReque
         }
       }
 
-      await auditLog(tenantId, userId, 'UPDATE', 'Booking', booking.id, existing, { status: 'CONFIRMED' });
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          bookingId: booking.id,
+          action: 'UPDATE',
+          objectType: 'Booking',
+          objectId: booking.id,
+          oldValues: { status: existing.status, unitStatus: existing.unit.status },
+          newValues: { status: 'CONFIRMED', unitStatus: 'BOOKED' },
+        },
+      });
 
       return booking;
-    });
+    }, { isolationLevel: 'Serializable' });
 
     res.json({ success: true, data: result });
   } catch (error) {
+    if (error instanceof Error && [
+      'Unit is no longer available; refresh inventory and retry',
+      'Booking status changed; refresh and retry',
+      'Booking not found after confirmation',
+      'Another active booking already holds this unit',
+      'Booking amount does not reconcile with the approved quotation',
+      'Installment schedule does not reconcile with the booking amount',
+    ].includes(error.message)) {
+      return res.status(409).json({ success: false, error: error.message });
+    }
+    if ((error as { code?: string })?.code === 'P2034') {
+      return res.status(409).json({ success: false, error: 'Inventory changed concurrently; refresh and retry' });
+    }
     console.error('Confirm booking error:', error);
     res.status(500).json({ success: false, error: 'Failed to confirm booking' });
   }
@@ -422,15 +576,63 @@ router.patch('/:id/cancel', authorize('Booking', 'edit'), async (req: AuthReques
       return res.status(400).json({ success: false, error: 'Booking is already cancelled or completed' });
     }
 
-    const booking = await prisma.booking.update({
-      where: { id: req.params.id },
-      data: { status: 'CANCELLED', notes: notes || existing.notes },
+    const verifiedPaymentCount = await prisma.payment.count({
+      where: { tenantId, bookingId: existing.id, status: { in: ['VERIFIED', 'COMPLETED'] } },
     });
+    if (verifiedPaymentCount > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Booking has verified payments; reconcile or refund them before cancellation',
+      });
+    }
 
-    await auditLog(tenantId, userId, 'UPDATE', 'Booking', booking.id, existing, { status: 'CANCELLED', notes });
+    const booking = await prisma.$transaction(async (tx) => {
+      const updated = await tx.booking.updateMany({
+        where: { id: existing.id, tenantId, status: existing.status },
+        data: { status: 'CANCELLED', notes: notes || existing.notes },
+      });
+      if (updated.count !== 1) throw new Error('Booking status changed; refresh and retry');
+      const otherActiveBookings = await tx.booking.count({
+        where: {
+          id: { not: existing.id },
+          tenantId,
+          unitId: existing.unitId,
+          status: { in: ['PENDING', 'CONFIRMED'] },
+        },
+      });
+      if (otherActiveBookings === 0) {
+        await tx.unit.updateMany({
+          where: {
+            id: existing.unitId,
+            tenantId,
+            projectId: existing.projectId,
+            status: existing.status === 'CONFIRMED' ? 'BOOKED' : 'RESERVED',
+          },
+          data: { status: 'AVAILABLE' },
+        });
+      }
+      const cancelledBooking = await tx.booking.findFirst({ where: { id: existing.id, tenantId } });
+      if (!cancelledBooking) throw new Error('Booking not found after cancellation');
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          bookingId: existing.id,
+          action: 'UPDATE',
+          objectType: 'Booking',
+          objectId: existing.id,
+          oldValues: { status: existing.status },
+          newValues: { status: 'CANCELLED', notes, unitStatus: otherActiveBookings === 0 ? 'AVAILABLE' : undefined },
+        },
+      });
+      return cancelledBooking;
+    });
 
     res.json({ success: true, data: booking });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Booking status changed; refresh and retry') {
+      return res.status(409).json({ success: false, error: error.message });
+    }
     console.error('Cancel booking error:', error);
     res.status(500).json({ success: false, error: 'Failed to cancel booking' });
   }
