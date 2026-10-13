@@ -278,8 +278,12 @@ function normalizeLayout(
   input: Widget[],
   movingId?: string,
   columns = GRID_COLUMNS,
+  compactMovingUp = false,
 ): Widget[] {
   const result: Widget[] = [];
+  const otherWidgets = compactMovingUp && movingId
+    ? normalizeLayout(input.filter((widget) => widget.id !== movingId), undefined, columns)
+    : [];
   const ordered = [...input].sort((a, b) =>
     a.id === movingId
       ? -1
@@ -304,6 +308,29 @@ function normalizeLayout(
         h: height,
       },
     };
+    if (compactMovingUp && widget.id === movingId && next.position.y > 0) {
+      const candidateColumns = Array.from(
+        { length: Math.max(0, columns - width + 1) },
+        (_, index) => index,
+      ).sort(
+        (a, b) =>
+          Math.abs(a - next.position.x) - Math.abs(b - next.position.x) ||
+          a - b,
+      );
+      for (let y = 0; y < next.position.y; y += 1) {
+        const availableColumn = candidateColumns.find((x) => {
+          const candidate = { ...next.position, x, y };
+          return !otherWidgets.some((item) =>
+            overlaps(candidate, item.position),
+          );
+        });
+        if (availableColumn !== undefined) {
+          next.position.x = availableColumn;
+          next.position.y = y;
+          break;
+        }
+      }
+    }
     while (result.some((item) => overlaps(next.position, item.position))) {
       next.position.y += 1;
     }
@@ -514,7 +541,41 @@ export default function DashboardBuilderPage() {
       });
     };
 
-    const handleUp = () => setDragState(null);
+    const handleUp = () => {
+      if (dragState.mode === "drag" && layoutConfig.autoArrange) {
+        const arranged = normalizeLayout(
+          widgets,
+          dragState.id,
+          layoutColumns || GRID_COLUMNS,
+          true,
+        );
+        const currentPosition = widgets.find(
+          (widget) => widget.id === dragState.id,
+        )?.position;
+        const arrangedPosition = arranged.find(
+          (widget) => widget.id === dragState.id,
+        )?.position;
+        if (
+          arrangedPosition &&
+          (arrangedPosition.x !== dragState.startPosition.x ||
+            arrangedPosition.y !== dragState.startPosition.y ||
+            arrangedPosition.w !== dragState.startPosition.w ||
+            arrangedPosition.h !== dragState.startPosition.h)
+        ) {
+          if (
+            currentPosition &&
+            (currentPosition.x !== arrangedPosition.x ||
+              currentPosition.y !== arrangedPosition.y ||
+              currentPosition.w !== arrangedPosition.w ||
+              currentPosition.h !== arrangedPosition.h)
+          ) {
+            setWidgets(arranged);
+          }
+          setDirty(true);
+        }
+      }
+      setDragState(null);
+    };
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
     return () => {
@@ -1035,6 +1096,7 @@ export default function DashboardBuilderPage() {
         ),
         sourceId,
         layoutColumns,
+        layoutConfig.autoArrange,
       ),
     );
   };

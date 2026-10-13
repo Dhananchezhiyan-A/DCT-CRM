@@ -31,7 +31,10 @@ async function proxyRequest(
   };
 
   if (method !== 'GET' && method !== 'HEAD') {
-    init.body = await request.text();
+    // Forward the body as raw bytes. Decoding it with request.text() would
+    // reinterpret binary payloads (e.g. multipart file uploads) as UTF-8 and
+    // replace invalid sequences with U+FFFD, corrupting the uploaded file.
+    init.body = Buffer.from(await request.arrayBuffer());
   }
 
   const url = new URL(request.url);

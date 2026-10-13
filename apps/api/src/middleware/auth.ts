@@ -52,11 +52,12 @@ export const authenticate = async (
       return res.status(401).json({ success: false, error: 'Invalid or expired token' });
     }
 
+    if (!user.tenant.isActive) {
+      return res.status(403).json({ success: false, error: 'Company is inactive. Contact Super Admin.' });
+    }
+
     if (!user.isSuperAdmin) {
       const now = new Date();
-      if (!user.tenant.isActive) {
-        return res.status(403).json({ success: false, error: 'Company is inactive. Contact Super Admin.' });
-      }
       if (user.tenant.companyStartDate && now < user.tenant.companyStartDate) {
         return res.status(403).json({ success: false, error: 'Company has not started yet. Access begins on ' + user.tenant.companyStartDate.toLocaleDateString() + '.' });
       }

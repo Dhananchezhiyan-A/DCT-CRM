@@ -300,7 +300,8 @@ export default function CompanyFormPage() {
             <div className="space-y-2 md:col-span-2">
               <label className="text-sm font-medium">Website</label>
               <input
-                type="url"
+                type="text"
+                inputMode="url"
                 value={form.website}
                 onChange={(e) => handleChange("website", e.target.value)}
                 placeholder="https://acme.com"

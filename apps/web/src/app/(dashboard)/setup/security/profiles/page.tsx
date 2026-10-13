@@ -2,13 +2,23 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, Check, ChevronDown, Save, Search, Shield, Users } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Save, Search, Shield, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { companyApi, permissionApi, profileApi, profileSecurityApi } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
@@ -23,7 +33,7 @@ const actions = ["CREATE", "READ", "UPDATE", "DELETE"] as const;
 
 export default function SetupProfilesPage() {
   const { toast } = useToast();
-  const { isSuperAdmin } = useAuth();
+  const { isSuperAdmin, isAdmin, hasEffectivePermission } = useAuth();
   const [companies, setCompanies] = React.useState<Array<{ id: string; name: string; slug: string }>>([]);
   const [profileTenantId, setProfileTenantId] = React.useState("");
   const [profiles, setProfiles] = React.useState<any[]>([]);
@@ -40,6 +50,8 @@ export default function SetupProfilesPage() {
   const [createDescription, setCreateDescription] = React.useState("");
   const [createAdmin, setCreateAdmin] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
 
   React.useEffect(() => {
     if (!isSuperAdmin) return;
@@ -231,17 +243,66 @@ export default function SetupProfilesPage() {
     } finally { setCreating(false); }
   };
 
+  const handleDeleteProfile = async () => {
+    if (!selected) return;
+    setDeleting(true);
+    try {
+      await profileApi.delete(selected.id);
+      const deletedName = selected.name;
+      setDeleteDialogOpen(false);
+      setSelected(null);
+      setSecurity(null);
+      await loadProfiles();
+      toast({ title: "Profile deleted", description: `${deletedName} was deleted successfully.` });
+    } catch (error: any) {
+      toast({ title: "Unable to delete profile", description: error?.response?.data?.error || error.message, variant: "destructive" as any });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const filteredProfiles = profiles.filter((profile) => `${profile.name} ${profile.description || ""}`.toLowerCase().includes(search.toLowerCase()));
   const systemPermissions = allPermissions.filter((permission) => ["SYSTEM", "USER", "ROLE", "PROFILE", "PERMISSION_SET", "REPORT", "DASHBOARD", "DATA"].includes(permission.module));
+  const selectedUserCount = selected?._count?.users || 0;
+  const deleteBlockedReason = !isAdmin && !hasEffectivePermission("PROFILE_DELETE")
+    ? "You do not have permission to delete profiles."
+    : selected?.isDefault
+      ? "Default profiles cannot be deleted."
+      : selected?.isGlobal && !isSuperAdmin
+        ? "Only a Super Admin can delete a shared profile."
+        : selectedUserCount > 0
+          ? `Reassign ${selectedUserCount} assigned user${selectedUserCount === 1 ? "" : "s"} before deleting this profile.`
+          : null;
 
   return <div className="space-y-6">
     <div className="flex items-start justify-between gap-4"><div className="flex items-center gap-3"><Link href="/setup" className="text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /></Link><div><p className="text-sm text-muted-foreground">Setup / Security Control</p><h1 className="text-xl font-semibold">Profiles</h1><p className="text-sm text-muted-foreground">Define the baseline access applied to users in your company.</p></div></div><Button onClick={() => setCreateOpen(true)}>Create Profile</Button></div>
     {isSuperAdmin && <div className="max-w-md space-y-2"><Label htmlFor="profile-company">Company</Label><select id="profile-company" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={profileTenantId} onChange={(event) => { setSelected(null); setSecurity(null); setProfiles([]); setLoading(true); setProfileTenantId(event.target.value); }}><option value="">Select a company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></div>}
     <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
       <Card className="h-fit"><CardHeader><CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" /> Profile list</CardTitle><div className="relative"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input className="pl-9" placeholder="Search profiles" value={search} onChange={(event) => setSearch(event.target.value)} /></div></CardHeader><CardContent className="space-y-2">{loading ? <p className="text-sm text-muted-foreground">Loading profiles...</p> : filteredProfiles.map((profile) => <button key={profile.id} type="button" onClick={() => { setSelected(profile); setTab("overview"); }} className={`w-full rounded-md border p-3 text-left ${selected?.id === profile.id ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}><div className="flex items-center justify-between gap-2"><span className="font-medium">{profile.name}</span>{profile.isAdmin && <Badge>Admin</Badge>}</div><p className="mt-1 text-xs text-muted-foreground">{profile.description || "No description"}</p><p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground"><Users className="h-3 w-3" /> {profile._count?.users || 0} users</p></button>)}</CardContent></Card>
-      <Card><CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><div><CardTitle>{selected?.name || "Select a profile"}</CardTitle><p className="mt-1 text-sm text-muted-foreground">{selected?.description || "Choose a profile to configure its security model."}</p></div><Button onClick={save} disabled={!security || saving}><Save className="mr-2 h-4 w-4" />{saving ? "Saving..." : "Save profile"}</Button></div><div className="flex flex-wrap gap-2 border-b pt-4">{["overview", "objects", "records", "system"].map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`border-b-2 px-3 py-2 text-sm capitalize ${tab === item ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{item === "objects" ? "Modules & Actions" : item === "records" ? "Record Access" : item === "system" ? "Reports, Dashboards & System" : item}</button>)}</div></CardHeader><CardContent>{loadingSecurity ? <p className="py-10 text-sm text-muted-foreground">Loading profile security...</p> : !security ? <p className="py-10 text-sm text-muted-foreground">Select a profile.</p> : <ProfileEditor tab={tab} security={security} modules={modules} systemPermissions={systemPermissions} updateObject={updateObject} toggleSystemPermission={toggleSystemPermission} setSecurity={setSecurity} />}</CardContent></Card>
+      <Card><CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><div><CardTitle>{selected?.name || "Select a profile"}</CardTitle><p className="mt-1 text-sm text-muted-foreground">{selected?.description || "Choose a profile to configure its security model."}</p>{selected && deleteBlockedReason && <p className="mt-2 text-sm text-muted-foreground">{deleteBlockedReason}</p>}</div><div className="flex gap-2"><Button variant="outline" onClick={() => setDeleteDialogOpen(true)} disabled={!selected || Boolean(deleteBlockedReason) || deleting} title={deleteBlockedReason || undefined}><Trash2 className="mr-2 h-4 w-4" />Delete profile</Button><Button onClick={save} disabled={!security || saving}><Save className="mr-2 h-4 w-4" />{saving ? "Saving..." : "Save profile"}</Button></div></div><div className="flex flex-wrap gap-2 border-b pt-4">{["overview", "objects", "records", "system"].map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`border-b-2 px-3 py-2 text-sm capitalize ${tab === item ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{item === "objects" ? "Modules & Actions" : item === "records" ? "Record Access" : item === "system" ? "Reports, Dashboards & System" : item}</button>)}</div></CardHeader><CardContent>{loadingSecurity ? <p className="py-10 text-sm text-muted-foreground">Loading profile security...</p> : !security ? <p className="py-10 text-sm text-muted-foreground">Select a profile.</p> : <ProfileEditor tab={tab} security={security} modules={modules} systemPermissions={systemPermissions} updateObject={updateObject} toggleSystemPermission={toggleSystemPermission} setSecurity={setSecurity} />}</CardContent></Card>
     </div>
     <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent><DialogHeader><DialogTitle>Create Setup Profile</DialogTitle></DialogHeader><div className="grid gap-4 py-3"><div><Label htmlFor="setup-profile-name">Profile name</Label><Input id="setup-profile-name" value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder="Sales Executive" /></div><div><Label htmlFor="setup-profile-description">Description</Label><Input id="setup-profile-description" value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Own leads and site visits" /></div>{isSuperAdmin && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={createAdmin} onChange={(event) => setCreateAdmin(event.target.checked)} /> Profile administrator</label>}</div><DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={createProfile} disabled={creating || (isSuperAdmin && !profileTenantId)}>{creating ? "Creating..." : "Create Profile"}</Button></DialogFooter></DialogContent></Dialog>
+    <AlertDialog open={deleteDialogOpen} onOpenChange={(open) => { if (!deleting) setDeleteDialogOpen(open); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete profile?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will permanently delete <strong>{selected?.name}</strong>. This action cannot be undone.
+            Profiles assigned to users cannot be deleted; reassign those users first.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(event) => { event.preventDefault(); void handleDeleteProfile(); }}
+            disabled={deleting}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {deleting ? "Deleting..." : "Delete profile"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>;
 }
 

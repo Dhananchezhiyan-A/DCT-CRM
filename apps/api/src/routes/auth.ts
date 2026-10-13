@@ -65,7 +65,7 @@ router.post('/login', async (req: Request, res: Response) => {
       });
     }
 
-    const user = await prisma.user.findFirst({
+    const users = await prisma.user.findMany({
       where: { email, isActive: true },
       include: {
         tenant: { select: { id: true, name: true, slug: true, isActive: true, companyStartDate: true, companyExpiryDate: true } },
@@ -84,12 +84,20 @@ router.post('/login', async (req: Request, res: Response) => {
       },
     });
 
+    let user: (typeof users)[number] | undefined;
+    for (const candidate of users) {
+      if (await bcrypt.compare(password, candidate.passwordHash)) {
+        user = candidate;
+        break;
+      }
+    }
+
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     if (!user.tenant.isActive) {
-      return res.status(403).json({ success: false, error: 'Company is inactive. Contact Super Admin.' });
+      return res.status(403).json({ success: false, error: 'Company is deactivated. Contact your administrator.' });
     }
 
     if (!user.isSuperAdmin) {
@@ -100,11 +108,6 @@ router.post('/login', async (req: Request, res: Response) => {
       if (user.tenant.companyExpiryDate && now > user.tenant.companyExpiryDate) {
         return res.status(403).json({ success: false, error: 'Company subscription has expired. Contact Super Admin.' });
       }
-    }
-
-    const validPassword = await bcrypt.compare(password, user.passwordHash);
-    if (!validPassword) {
-      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
     await prisma.user.update({

@@ -120,16 +120,14 @@ export default function CompanyEditPage() {
       setError("Phone is required");
       return;
     }
-    if (!form.website.trim()) {
-      setError("Website is required");
-      return;
-    }
 
     setIsSubmitting(true);
     try {
       const payload: any = {};
       Object.entries(form).forEach(([key, value]) => {
-        payload[key] = value === "" ? null : value;
+        // Send blanks as "" rather than null: the API schema accepts an empty
+        // string (and normalises it to null when storing) but rejects null.
+        payload[key] = value;
       });
 
       const res = await companyApi.update(companyId, payload);
@@ -219,7 +217,7 @@ export default function CompanyEditPage() {
                 )}
               </div>
               <div className="flex flex-col gap-2">
-                <label>
+                <label htmlFor="logo-upload">
                   <Button type="button" variant="outline" asChild>
                     <span className="cursor-pointer">
                       <Upload className="mr-2 h-4 w-4" />
@@ -228,6 +226,7 @@ export default function CompanyEditPage() {
                   </Button>
                 </label>
                 <input
+                  id="logo-upload"
                   type="file"
                   accept="image/jpeg,image/png,image/gif,image/webp"
                   onChange={handleLogoChange}
@@ -299,13 +298,14 @@ export default function CompanyEditPage() {
               />
             </div>
             <div className="space-y-2 md:col-span-2">
-              <label className="text-sm font-medium">Website <span className="text-destructive">*</span></label>
+              <label className="text-sm font-medium">Website</label>
               <input
-                type="url"
+                type="text"
+                inputMode="url"
                 value={form.website}
                 onChange={(e) => handleChange("website", e.target.value)}
+                placeholder="https://example.com"
                 className="h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                required
               />
             </div>
           </CardContent>

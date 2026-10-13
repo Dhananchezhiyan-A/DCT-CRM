@@ -13,6 +13,11 @@ const requireProfileCreateAccess = (req: AuthRequest, res: Response, next: NextF
   return requirePermission('PROFILE_CREATE')(req, res, next);
 };
 
+const requireProfileDeleteAccess = (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (req.user?.isAdmin) return next();
+  return requirePermission('PROFILE_DELETE')(req, res, next);
+};
+
 const leadStatusAccessSchema = z.union([
   z.array(z.string()).transform((statuses) => ({ statuses })),
   z.object({
@@ -61,7 +66,7 @@ router.get('/', requirePermission('PROFILE_READ'), async (req: AuthRequest, res:
         where,
         include: {
           permissionSets: { where: { tenantId: req.tenantId! } },
-          _count: { select: { users: { where: { tenantId: req.tenantId! } } } },
+          _count: { select: { users: { where: { tenantId } } } },
         },
         skip,
         take: Number(limit),
@@ -258,7 +263,7 @@ router.put('/:id', requirePermission('PROFILE_UPDATE'), async (req: AuthRequest,
   }
 });
 
-router.delete('/:id', requirePermission('PROFILE_DELETE'), async (req: AuthRequest, res: Response) => {
+router.delete('/:id', requireProfileDeleteAccess, async (req: AuthRequest, res: Response) => {
   try {
     const existingProfile = await prisma.profile.findFirst({
       where: {

@@ -53,7 +53,36 @@ import {
   Settings,
   AlertTriangle,
   Shield,
+  Search,
+  KeyRound,
 } from "lucide-react";
+
+type CompanyStatisticType = "users" | "roles" | "leads" | "opportunities" | "bookings" | "projects";
+
+interface CompanyStatisticRecord {
+  id: string;
+  name?: string;
+  number?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  isActive?: boolean;
+  profile?: string;
+  roles?: string[];
+  description?: string | null;
+  userCount?: number;
+  totalUnits?: number | null;
+  projectType?: string | null;
+  company?: string;
+  status?: string;
+  createdAt?: string;
+  stage?: string;
+  amount?: number | null;
+  leadName?: string | null;
+  totalAmount?: number;
+  bookingDate?: string;
+  projectName?: string;
+  unitNumber?: string;
+}
 
 interface ProfileBreakdown {
   profileId: string;
@@ -141,6 +170,18 @@ export default function CompanyDetailsPage() {
   });
   const [isSavingCapacity, setIsSavingCapacity] = React.useState(false);
   const [isSavingPackage, setIsSavingPackage] = React.useState(false);
+  const [selectedStatistic, setSelectedStatistic] = React.useState<CompanyStatisticType | null>(null);
+  const [statisticSearch, setStatisticSearch] = React.useState("");
+  const [debouncedStatisticSearch, setDebouncedStatisticSearch] = React.useState("");
+  const [statisticPage, setStatisticPage] = React.useState(1);
+  const [statisticTotalPages, setStatisticTotalPages] = React.useState(1);
+  const [statisticRecords, setStatisticRecords] = React.useState<CompanyStatisticRecord[]>([]);
+  const [isLoadingStatistic, setIsLoadingStatistic] = React.useState(false);
+  const [statisticError, setStatisticError] = React.useState<string | null>(null);
+  const [passwordResetUserId, setPasswordResetUserId] = React.useState<string | null>(null);
+  const [resetPassword, setResetPassword] = React.useState("");
+  const [confirmResetPassword, setConfirmResetPassword] = React.useState("");
+  const [isResettingPassword, setIsResettingPassword] = React.useState(false);
 
   const fetchCompany = React.useCallback(async () => {
     setIsLoading(true);
@@ -177,6 +218,79 @@ export default function CompanyDetailsPage() {
   React.useEffect(() => {
     fetchCompany();
   }, [fetchCompany]);
+
+  React.useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedStatisticSearch(statisticSearch.trim()), 250);
+    return () => window.clearTimeout(timeout);
+  }, [statisticSearch]);
+
+  React.useEffect(() => {
+    if (!selectedStatistic) return;
+    let isCurrentRequest = true;
+    setIsLoadingStatistic(true);
+    setStatisticError(null);
+    companyApi.statistics(companyId, selectedStatistic, {
+      page: statisticPage,
+      limit: 20,
+      search: debouncedStatisticSearch,
+    }).then((response) => {
+      if (!isCurrentRequest) return;
+      if (response.data.success) {
+        setStatisticRecords(response.data.data || []);
+        setStatisticTotalPages(response.data.pagination?.totalPages || 1);
+      } else {
+        setStatisticError(response.data.error || "Failed to load company records");
+      }
+    }).catch((err: any) => {
+      if (isCurrentRequest) {
+        setStatisticError(err?.response?.data?.error || "Failed to load company records");
+      }
+    }).finally(() => {
+      if (isCurrentRequest) setIsLoadingStatistic(false);
+    });
+    return () => {
+      isCurrentRequest = false;
+    };
+  }, [companyId, debouncedStatisticSearch, selectedStatistic, statisticPage]);
+
+  const openStatistic = (type: CompanyStatisticType) => {
+    setSelectedStatistic(type);
+    setStatisticSearch("");
+    setDebouncedStatisticSearch("");
+    setStatisticPage(1);
+    setStatisticRecords([]);
+    setPasswordResetUserId(null);
+    setResetPassword("");
+    setConfirmResetPassword("");
+  };
+
+  const handleUserPasswordReset = async (userId: string) => {
+    if (resetPassword.length < 8) {
+      toast({ title: "Invalid password", description: "Password must be at least 8 characters.", variant: "destructive" });
+      return;
+    }
+    if (resetPassword !== confirmResetPassword) {
+      toast({ title: "Passwords do not match", variant: "destructive" });
+      return;
+    }
+
+    setIsResettingPassword(true);
+    try {
+      const response = await companyApi.resetUserPassword(companyId, userId, resetPassword);
+      if (!response.data.success) {
+        toast({ title: "Password reset failed", description: response.data.error || "Failed to reset user password.", variant: "destructive" });
+        return;
+      }
+      toast({ title: "Password reset", description: "The user's password has been updated." });
+      setPasswordResetUserId(null);
+      setResetPassword("");
+      setConfirmResetPassword("");
+    } catch (err: any) {
+      toast({ title: "Password reset failed", description: err?.response?.data?.error || "Failed to reset user password.", variant: "destructive" });
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -686,15 +800,257 @@ export default function CompanyDetailsPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
-            <StatItem icon={Users} label="Users" value={company._count.users} />
-            <StatItem icon={Building2} label="Roles" value={company._count.roles} />
-            <StatItem icon={Building2} label="Leads" value={company._count.leads} />
-            <StatItem icon={Building2} label="Opportunities" value={company._count.opportunities} />
-            <StatItem icon={Building2} label="Bookings" value={company._count.bookings} />
-            <StatItem icon={Building2} label="Projects" value={company._count.projects} />
+            <StatItem icon={Users} label="Users" value={company._count.users} onClick={() => openStatistic("users")} />
+            <StatItem icon={Building2} label="Roles" value={company._count.roles} onClick={() => openStatistic("roles")} />
+            <StatItem icon={Building2} label="Leads" value={company._count.leads} onClick={() => openStatistic("leads")} />
+            <StatItem icon={Building2} label="Opportunities" value={company._count.opportunities} onClick={() => openStatistic("opportunities")} />
+            <StatItem icon={Building2} label="Bookings" value={company._count.bookings} onClick={() => openStatistic("bookings")} />
+            <StatItem icon={Building2} label="Projects" value={company._count.projects} onClick={() => openStatistic("projects")} />
           </div>
         </CardContent>
       </Card>
+
+      {selectedStatistic && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-6"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedStatistic(null);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="company-statistic-title"
+            className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-xl"
+          >
+            <header className="sticky top-0 z-10 shrink-0 border-b bg-background px-5 py-4 pr-14">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 id="company-statistic-title" className="text-lg font-semibold capitalize">
+                    {selectedStatistic} · {company.name}
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Search {selectedStatistic} for this company.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close company records"
+                  onClick={() => setSelectedStatistic(null)}
+                  className="absolute right-3 top-3"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="relative mt-4">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="search"
+                  value={statisticSearch}
+                  onChange={(event) => {
+                    setStatisticSearch(event.target.value);
+                    setStatisticPage(1);
+                  }}
+                  placeholder={`Search ${selectedStatistic}...`}
+                  aria-label={`Search ${selectedStatistic}`}
+                  className="h-10 w-full rounded-md border border-input bg-background pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            </header>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {isLoadingStatistic ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
+                </div>
+              ) : statisticError ? (
+                <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>{statisticError}</span>
+                </div>
+              ) : statisticRecords.length === 0 ? (
+                <p className="py-12 text-center text-sm text-muted-foreground">
+                  {statisticSearch ? "No matching records found." : `No ${selectedStatistic} found for this company.`}
+                </p>
+              ) : selectedStatistic === "users" ? (
+                <div className="space-y-3">
+                  {statisticRecords.map((record) => (
+                    <article key={record.id} className="rounded-lg border p-4">
+                      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                        <div className="min-w-0 space-y-1">
+                          <h3 className="font-medium">{record.name}</h3>
+                          <p className="break-all text-sm text-muted-foreground">{record.email}</p>
+                          <p className="text-sm text-muted-foreground">
+                            Profile: {record.profile} · Roles: {record.roles?.join(", ") || "None"}
+                          </p>
+                          <Badge variant="outline">{record.isActive ? "Active" : "Inactive"}</Badge>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setPasswordResetUserId(passwordResetUserId === record.id ? null : record.id);
+                            setResetPassword("");
+                            setConfirmResetPassword("");
+                          }}
+                        >
+                          <KeyRound className="mr-2 h-4 w-4" />
+                          Forgot Password
+                        </Button>
+                      </div>
+                      {passwordResetUserId === record.id && (
+                        <form
+                          className="mt-4 grid gap-3 border-t pt-4 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-end"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            handleUserPasswordReset(record.id);
+                          }}
+                        >
+                          <label className="space-y-1 text-sm">
+                            <span className="font-medium">Temporary password</span>
+                            <input
+                              type="password"
+                              autoComplete="new-password"
+                              minLength={8}
+                              required
+                              value={resetPassword}
+                              onChange={(event) => setResetPassword(event.target.value)}
+                              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            />
+                          </label>
+                          <label className="space-y-1 text-sm">
+                            <span className="font-medium">Confirm password</span>
+                            <input
+                              type="password"
+                              autoComplete="new-password"
+                              minLength={8}
+                              required
+                              value={confirmResetPassword}
+                              onChange={(event) => setConfirmResetPassword(event.target.value)}
+                              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            />
+                          </label>
+                          <Button type="submit" size="sm" disabled={isResettingPassword}>
+                            {isResettingPassword && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            Reset
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={isResettingPassword}
+                            onClick={() => {
+                              setPasswordResetUserId(null);
+                              setResetPassword("");
+                              setConfirmResetPassword("");
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </form>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              ) : selectedStatistic === "roles" ? (
+                <div className="space-y-3">
+                  {statisticRecords.map((record) => (
+                    <article key={record.id} className="rounded-lg border p-4">
+                      <h3 className="font-medium">{record.name}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">{record.description || "No description"}</p>
+                      <p className="mt-2 text-xs text-muted-foreground">{record.userCount} users assigned</p>
+                    </article>
+                  ))}
+                </div>
+              ) : selectedStatistic === "leads" ? (
+                <div className="space-y-3">
+                  {statisticRecords.map((record) => (
+                    <article key={record.id} className="rounded-lg border p-4">
+                      <h3 className="font-medium">{record.name}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {[record.number, record.company, record.email, record.phone].filter(Boolean).join(" · ") || "No additional details"}
+                      </p>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {record.status}{record.createdAt ? ` · Created ${formatDate(record.createdAt)}` : ""}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              ) : selectedStatistic === "opportunities" ? (
+                <div className="space-y-3">
+                  {statisticRecords.map((record) => (
+                    <article key={record.id} className="rounded-lg border p-4">
+                      <h3 className="font-medium">{record.name}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {[record.number, record.stage, record.leadName && `Lead: ${record.leadName}`].filter(Boolean).join(" · ")}
+                      </p>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {record.amount == null ? "Amount not set" : `Amount: ${record.amount.toLocaleString()}`}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              ) : selectedStatistic === "bookings" ? (
+                <div className="space-y-3">
+                  {statisticRecords.map((record) => (
+                    <article key={record.id} className="rounded-lg border p-4">
+                      <h3 className="font-medium">{record.number}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {[record.projectName, record.unitNumber && `Unit ${record.unitNumber}`, record.leadName && `Lead: ${record.leadName}`].filter(Boolean).join(" · ")}
+                      </p>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {[record.status, `Amount: ${record.totalAmount?.toLocaleString()}`, record.bookingDate ? formatDate(record.bookingDate) : null].filter(Boolean).join(" · ")}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {statisticRecords.map((record) => (
+                    <article key={record.id} className="rounded-lg border p-4">
+                      <h3 className="font-medium">{record.name}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {[record.description, record.projectType].filter(Boolean).join(" · ") || "No additional details"}
+                      </p>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {record.status}{record.totalUnits != null ? ` · ${record.totalUnits} total units` : ""}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <footer className="flex shrink-0 items-center justify-between border-t bg-background px-5 py-3">
+              <p className="text-sm text-muted-foreground">Page {statisticPage} of {statisticTotalPages}</p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={statisticPage <= 1 || isLoadingStatistic}
+                  onClick={() => setStatisticPage((page) => page - 1)}
+                >
+                  Previous
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={statisticPage >= statisticTotalPages || isLoadingStatistic}
+                  onClick={() => setStatisticPage((page) => page + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -765,13 +1121,17 @@ function InfoItem({ icon: Icon, label, value }: { icon: React.ElementType; label
   );
 }
 
-function StatItem({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: number }) {
+function StatItem({ icon: Icon, label, value, onClick }: { icon: React.ElementType; label: string; value: number; onClick?: () => void }) {
   return (
-    <div className="rounded-lg border p-3 text-center">
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-lg border p-3 text-center transition-colors hover:border-primary/50 hover:bg-accent/50 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+    >
       <Icon className="h-5 w-5 text-muted-foreground mx-auto mb-1" />
       <p className="text-xl font-semibold">{value}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
-    </div>
+    </button>
   );
 }
 

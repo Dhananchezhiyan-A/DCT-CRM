@@ -789,6 +789,10 @@ export const companyApi = {
     api.get<ApiResponse>('/api/super-admin/companies', { params }),
   get: (id: string) =>
     api.get<ApiResponse>(`/api/super-admin/companies/${id}`),
+  statistics: (id: string, type: 'users' | 'roles' | 'leads' | 'opportunities' | 'bookings' | 'projects', params?: { page?: number; limit?: number; search?: string }) =>
+    api.get<ApiResponse>(`/api/super-admin/companies/${id}/statistics/${type}`, { params }),
+  resetUserPassword: (id: string, userId: string, password: string) =>
+    api.put<ApiResponse>(`/api/super-admin/companies/${id}/users/${userId}/password`, { password }),
   create: (data: any) =>
     api.post<ApiResponse>('/api/super-admin/companies', data),
   update: (id: string, data: any) =>

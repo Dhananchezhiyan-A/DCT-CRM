@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@dct-crm/db';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { requireSuperAdmin } from '../middleware/superAdmin';
@@ -54,7 +55,7 @@ const createCompanySchema = z.object({
   companyCode: z.string().min(1, 'Company code is required').max(50).regex(/^[A-Za-z0-9_-]+$/, 'Company code must be alphanumeric with hyphens or underscores'),
   email: z.string().email('Valid email is required').min(1, 'Email is required'),
   phone: z.string().min(1, 'Phone is required').max(30),
-  website: z.string().url('Invalid URL').optional().or(z.literal('')),
+  website: z.union([z.string().trim().url('Invalid URL'), z.string().trim().max(0)]).optional().or(z.literal('')),
   address: z.string().max(500).optional().or(z.literal('')),
   city: z.string().max(100).optional().or(z.literal('')),
   state: z.string().max(100).optional().or(z.literal('')),
@@ -83,7 +84,7 @@ const updateCompanySchema = z.object({
   companyCode: z.string().min(1).max(50).regex(/^[A-Za-z0-9_-]+$/).optional(),
   email: z.string().email('Valid email is required').min(1, 'Email is required'),
   phone: z.string().min(1, 'Phone is required').max(30),
-  website: z.string().url('Invalid URL').optional().or(z.literal('')),
+  website: z.union([z.string().trim().url('Invalid URL'), z.string().trim().max(0)]).optional().or(z.literal('')),
   address: z.string().max(500).optional().or(z.literal('')),
   city: z.string().max(100).optional().or(z.literal('')),
   state: z.string().max(100).optional().or(z.literal('')),
@@ -96,6 +97,14 @@ const updateCompanySchema = z.object({
   companyStartDate: z.string().optional().or(z.literal('')),
   companyExpiryDate: z.string().optional().or(z.literal('')),
 }).refine(Object.keys, { message: 'At least one field must be provided' });
+
+const companyStatisticTypes = ['users', 'roles', 'leads', 'opportunities', 'bookings', 'projects'] as const;
+const companyStatisticTypeSchema = z.enum(companyStatisticTypes);
+const companyUserPasswordSchema = z.object({ password: z.string().min(8, 'Password must be at least 8 characters') });
+
+function searchTerms(search: string) {
+  return search.split(/\s+/).filter(Boolean);
+}
 
 const ALLOWED_SORT_FIELDS = ['name', 'companyCode', 'createdAt', 'updatedAt', 'isActive'];
 const ALLOWED_SORT_ORDERS = ['asc', 'desc'];
@@ -253,6 +262,393 @@ router.get('/companies/:id', async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error('Get company error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch company' });
+  }
+});
+
+router.get('/companies/:id/statistics/:type', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id || id.includes('..') || id.includes('/') || id.includes('\\')) {
+      return res.status(400).json({ success: false, error: 'Invalid company ID' });
+    }
+
+    const parsedType = companyStatisticTypeSchema.safeParse(req.params.type);
+    if (!parsedType.success) {
+      return res.status(400).json({ success: false, error: 'Invalid company statistics type' });
+    }
+
+    const tenantExists = await prisma.tenant.findUnique({ where: { id }, select: { id: true } });
+    if (!tenantExists) return res.status(404).json({ success: false, error: 'Company not found' });
+
+    const page = req.query.page === undefined ? 1 : Number(req.query.page);
+    const requestedLimit = req.query.limit === undefined ? 20 : Number(req.query.limit);
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(requestedLimit) || requestedLimit < 1) {
+      return res.status(400).json({ success: false, error: 'Page and limit must be positive integers' });
+    }
+    const limit = Math.min(100, requestedLimit);
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 200) : '';
+    const terms = searchTerms(search);
+    const skip = (page - 1) * limit;
+
+    switch (parsedType.data) {
+      case 'users': {
+        const where: Prisma.UserWhereInput = {
+          tenantId: id,
+          isSuperAdmin: false,
+          ...(terms.length ? {
+            AND: terms.map((term) => ({
+              OR: [
+                { firstName: { contains: term, mode: 'insensitive' as const } },
+                { lastName: { contains: term, mode: 'insensitive' as const } },
+                { email: { contains: term, mode: 'insensitive' as const } },
+                { profile: { is: { name: { contains: term, mode: 'insensitive' as const } } } },
+                { roles: { some: { role: { name: { contains: term, mode: 'insensitive' as const } } } } },
+              ],
+            })),
+          } : {}),
+        };
+        const [users, total] = await Promise.all([
+          prisma.user.findMany({
+            where,
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+              isActive: true,
+              profile: { select: { name: true } },
+              roles: { select: { role: { select: { name: true } } } },
+            },
+            skip,
+            take: limit,
+            orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+          }),
+          prisma.user.count({ where }),
+        ]);
+        return res.json({
+          success: true,
+          data: users.map((user) => ({
+            id: user.id,
+            name: `${user.firstName} ${user.lastName}`.trim(),
+            email: user.email,
+            isActive: user.isActive,
+            profile: user.profile?.name || 'No profile',
+            roles: user.roles.map(({ role }) => role.name),
+          })),
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+      }
+      case 'roles': {
+        const where: Prisma.RoleWhereInput = {
+          tenantId: id,
+          ...(terms.length ? {
+            AND: terms.map((term) => ({
+              OR: [
+                { name: { contains: term, mode: 'insensitive' as const } },
+                { description: { contains: term, mode: 'insensitive' as const } },
+              ],
+            })),
+          } : {}),
+        };
+        const [roles, total] = await Promise.all([
+          prisma.role.findMany({
+            where,
+            select: { id: true, name: true, description: true, _count: { select: { users: true } } },
+            skip,
+            take: limit,
+            orderBy: { name: 'asc' },
+          }),
+          prisma.role.count({ where }),
+        ]);
+        return res.json({
+          success: true,
+          data: roles.map((role) => ({
+            id: role.id,
+            name: role.name,
+            description: role.description,
+            userCount: role._count.users,
+          })),
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+      }
+      case 'leads': {
+        const where: Prisma.LeadWhereInput = {
+          tenantId: id,
+          ...(terms.length ? {
+            AND: terms.map((term) => ({
+              OR: [
+                { firstName: { contains: term, mode: 'insensitive' as const } },
+                { lastName: { contains: term, mode: 'insensitive' as const } },
+                { leadNumber: { contains: term, mode: 'insensitive' as const } },
+                { company: { contains: term, mode: 'insensitive' as const } },
+                { email: { contains: term, mode: 'insensitive' as const } },
+                { phone: { contains: term, mode: 'insensitive' as const } },
+              ],
+            })),
+          } : {}),
+        };
+        const [leads, total] = await Promise.all([
+          prisma.lead.findMany({
+            where,
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              leadNumber: true,
+              company: true,
+              email: true,
+              phone: true,
+              status: true,
+              createdAt: true,
+            },
+            skip,
+            take: limit,
+            orderBy: { createdAt: 'desc' },
+          }),
+          prisma.lead.count({ where }),
+        ]);
+        return res.json({
+          success: true,
+          data: leads.map((lead) => ({
+            id: lead.id,
+            name: `${lead.firstName || ''} ${lead.lastName}`.trim(),
+            number: lead.leadNumber,
+            company: lead.company,
+            email: lead.email,
+            phone: lead.phone,
+            status: lead.status,
+            createdAt: lead.createdAt,
+          })),
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+      }
+      case 'opportunities': {
+        const stages = [
+          'PROSPECTING',
+          'QUALIFICATION',
+          'NEEDS_ANALYSIS',
+          'PROPOSAL',
+          'NEGOTIATION',
+          'CLOSED_WON',
+          'CLOSED_LOST',
+        ] as const;
+        const matchingStage = stages.find((stage) => stage === search.toUpperCase());
+        const where: Prisma.OpportunityWhereInput = {
+          tenantId: id,
+          ...(terms.length ? {
+            OR: [
+              {
+                AND: terms.map((term) => ({
+                  OR: [
+                    { name: { contains: term, mode: 'insensitive' as const } },
+                    { opportunityNumber: { contains: term, mode: 'insensitive' as const } },
+                    { lead: { is: { firstName: { contains: term, mode: 'insensitive' as const } } } },
+                    { lead: { is: { lastName: { contains: term, mode: 'insensitive' as const } } } },
+                  ],
+                })),
+              },
+              ...(matchingStage ? [{ stage: matchingStage }] : []),
+            ],
+          } : {}),
+        };
+        const [opportunities, total] = await Promise.all([
+          prisma.opportunity.findMany({
+            where,
+            select: {
+              id: true,
+              name: true,
+              opportunityNumber: true,
+              stage: true,
+              amount: true,
+              lead: { select: { firstName: true, lastName: true } },
+            },
+            skip,
+            take: limit,
+            orderBy: { createdAt: 'desc' },
+          }),
+          prisma.opportunity.count({ where }),
+        ]);
+        return res.json({
+          success: true,
+          data: opportunities.map((opportunity) => ({
+            id: opportunity.id,
+            name: opportunity.name,
+            number: opportunity.opportunityNumber,
+            stage: opportunity.stage,
+            amount: opportunity.amount,
+            leadName: opportunity.lead
+              ? `${opportunity.lead.firstName || ''} ${opportunity.lead.lastName}`.trim()
+              : null,
+          })),
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+      }
+      case 'bookings': {
+        const statuses = ['PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED'] as const;
+        const matchingStatus = statuses.find((status) => status === search.toUpperCase());
+        const where: Prisma.BookingWhereInput = {
+          tenantId: id,
+          ...(terms.length ? {
+            OR: [
+              {
+                AND: terms.map((term) => ({
+                  OR: [
+                    { number: { contains: term, mode: 'insensitive' as const } },
+                    { lead: { is: { firstName: { contains: term, mode: 'insensitive' as const } } } },
+                    { lead: { is: { lastName: { contains: term, mode: 'insensitive' as const } } } },
+                    { project: { is: { name: { contains: term, mode: 'insensitive' as const } } } },
+                    { unit: { is: { number: { contains: term, mode: 'insensitive' as const } } } },
+                  ],
+                })),
+              },
+              ...(matchingStatus ? [{ status: matchingStatus }] : []),
+            ],
+          } : {}),
+        };
+        const [bookings, total] = await Promise.all([
+          prisma.booking.findMany({
+            where,
+            select: {
+              id: true,
+              number: true,
+              status: true,
+              totalAmount: true,
+              bookingDate: true,
+              lead: { select: { firstName: true, lastName: true } },
+              project: { select: { name: true } },
+              unit: { select: { number: true } },
+            },
+            skip,
+            take: limit,
+            orderBy: { createdAt: 'desc' },
+          }),
+          prisma.booking.count({ where }),
+        ]);
+        return res.json({
+          success: true,
+          data: bookings.map((booking) => ({
+            id: booking.id,
+            number: booking.number,
+            status: booking.status,
+            totalAmount: booking.totalAmount,
+            bookingDate: booking.bookingDate,
+            leadName: booking.lead
+              ? `${booking.lead.firstName || ''} ${booking.lead.lastName}`.trim()
+              : null,
+            projectName: booking.project.name,
+            unitNumber: booking.unit.number,
+          })),
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+      }
+      case 'projects': {
+        const normalizedSearch = search.toLowerCase();
+        const matchingActiveStatus = normalizedSearch === 'active'
+          ? true
+          : normalizedSearch === 'inactive'
+            ? false
+            : undefined;
+        const matchingUnitCount = /^\d+$/.test(search) ? Number(search) : undefined;
+        const where: Prisma.ProjectWhereInput = {
+          tenantId: id,
+          ...(terms.length ? {
+            OR: [
+              {
+                AND: terms.map((term) => ({
+                  OR: [
+                    { name: { contains: term, mode: 'insensitive' as const } },
+                    { description: { contains: term, mode: 'insensitive' as const } },
+                    { address: { contains: term, mode: 'insensitive' as const } },
+                    { city: { contains: term, mode: 'insensitive' as const } },
+                    { state: { contains: term, mode: 'insensitive' as const } },
+                    { zipCode: { contains: term, mode: 'insensitive' as const } },
+                    { projectType: { contains: term, mode: 'insensitive' as const } },
+                  ],
+                })),
+              },
+              ...(matchingActiveStatus !== undefined ? [{ isActive: matchingActiveStatus }] : []),
+              ...(matchingUnitCount !== undefined ? [{ totalUnits: matchingUnitCount }] : []),
+            ],
+          } : {}),
+        };
+        const [projects, total] = await Promise.all([
+          prisma.project.findMany({
+            where,
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              address: true,
+              city: true,
+              state: true,
+              zipCode: true,
+              projectType: true,
+              totalUnits: true,
+              isActive: true,
+            },
+            skip,
+            take: limit,
+            orderBy: { name: 'asc' },
+          }),
+          prisma.project.count({ where }),
+        ]);
+        return res.json({
+          success: true,
+          data: projects.map((project) => ({
+            id: project.id,
+            name: project.name,
+            description: [project.description, project.address, project.city, project.state, project.zipCode].filter(Boolean).join(', '),
+            status: project.isActive ? 'Active' : 'Inactive',
+            totalUnits: project.totalUnits,
+            projectType: project.projectType,
+          })),
+          pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Get company statistics records error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch company records' });
+  }
+});
+
+router.put('/companies/:id/users/:userId/password', async (req: AuthRequest, res: Response) => {
+  try {
+    const data = companyUserPasswordSchema.parse(req.body);
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.userId, tenantId: req.params.id, isSuperAdmin: false },
+      select: { id: true },
+    });
+    if (!user) return res.status(404).json({ success: false, error: 'Company user not found' });
+
+    const passwordHash = await bcrypt.hash(data.password, 12);
+    await prisma.$transaction(async (transaction) => {
+      await transaction.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash,
+          passwordResetToken: null,
+          passwordResetExpires: null,
+        },
+      });
+      await transaction.auditLog.create({
+        data: {
+          tenantId: req.params.id,
+          userId: req.user!.id,
+          action: 'UPDATE',
+          objectType: 'User',
+          objectId: user.id,
+          newValues: { passwordReset: true },
+        },
+      });
+    });
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ success: false, error: error.errors[0].message });
+    }
+    console.error('Reset company user password error:', error);
+    res.status(500).json({ success: false, error: 'Failed to reset company user password' });
   }
 });
 

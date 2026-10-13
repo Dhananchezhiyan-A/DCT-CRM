@@ -266,7 +266,13 @@ export default function CompaniesPage() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <span className="font-medium">{company.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => router.push(`/admin/companies/${company.id}`)}
+                      className="font-medium text-left underline-offset-4 hover:underline focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 rounded-sm"
+                    >
+                      {company.name}
+                    </button>
                     {company.email && (
                       <p className="text-xs text-muted-foreground">{company.email}</p>
                     )}

@@ -16,10 +16,31 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Bell, Menu, Settings, LogOut, User, HelpCircle, ChevronDown } from "lucide-react";
+import { Bell, Menu, LogOut, HelpCircle, ChevronDown } from "lucide-react";
 import { GlobalSearch } from "@/components/crm/global-search";
 import { useAuth } from "@/contexts/auth-context";
-import { homepageApi } from "@/lib/api";
+import { profileApi } from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+interface AdminHomeProfile {
+  id: string;
+  name: string;
+}
+
+function profileSlug(name: string) {
+  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function responseItems(response: any) {
+  const data = response?.data?.data ?? response?.data;
+  return Array.isArray(data) ? data : data?.profiles ?? [];
+}
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -27,13 +48,14 @@ interface HeaderProps {
 
 export function Header({ onMenuClick }: HeaderProps) {
   const router = useRouter();
-  const { user, profile, logout, isAdmin, isSuperAdmin } = useAuth();
+  const { user, profile, roles = [], tenant, logout, isAdmin, isSuperAdmin } = useAuth();
   const searchParams = useSearchParams();
   const isAuthenticated = Boolean(user);
   const showHomeSelector = isAuthenticated && isAdmin && !isSuperAdmin;
   const [adminHomeOpen, setAdminHomeOpen] = React.useState(false);
-  const [adminHomepages, setAdminHomepages] = React.useState<{ id: string; name: string }[]>([]);
-  const homepageRefreshId = React.useRef(0);
+  const [userDetailsOpen, setUserDetailsOpen] = React.useState(false);
+  const [adminProfiles, setAdminProfiles] = React.useState<AdminHomeProfile[]>([]);
+  const dropdownRefreshId = React.useRef(0);
   const [notifications] = React.useState([
     { id: 1, title: "New lead assigned", time: "5 min ago", read: false },
     { id: 2, title: "Site visit scheduled", time: "1 hour ago", read: false },
@@ -41,36 +63,30 @@ export function Header({ onMenuClick }: HeaderProps) {
   ]);
 
   const refreshAdminDropdownData = React.useCallback(() => {
-    if (!user || !isAdmin || isSuperAdmin) {
-      homepageRefreshId.current += 1;
-      setAdminHomepages([]);
+    if (!isAuthenticated || !isAdmin || isSuperAdmin) {
+      dropdownRefreshId.current += 1;
+      setAdminProfiles([]);
       return;
     }
 
-    const refreshId = ++homepageRefreshId.current;
-    homepageApi.list()
-      .then((homepagesResponse) => {
-        const homepageItems = (Array.isArray(homepagesResponse.data)
-          ? homepagesResponse.data
-          : (homepagesResponse.data as any)?.data ?? (homepagesResponse.data as any)?.homepages ?? []) as Array<{ id?: string; name?: string; isActive?: boolean }>;
-
-        const uniqueHomepages: Array<{ id: string; name: string }> = Array.from(
+    const refreshId = ++dropdownRefreshId.current;
+    profileApi.list({ limit: 100 })
+      .then((profilesResponse) => {
+        const profileItems = responseItems(profilesResponse) as Array<{ id?: string; name?: string }>;
+        const uniqueProfiles: AdminHomeProfile[] = Array.from(
           new Map(
-            homepageItems
-              .filter((item) => !!item?.id && !!item?.name && item.isActive !== false)
+            profileItems
+              .filter((item) => !!item?.id && !!item?.name)
               .map((item) => [item.id as string, { id: item.id as string, name: item.name as string }])
           ).values()
         ).sort((a, b) => a.name.localeCompare(b.name));
 
-        if (refreshId === homepageRefreshId.current) {
-          setAdminHomepages(uniqueHomepages);
+        if (refreshId === dropdownRefreshId.current) {
+          setAdminProfiles(uniqueProfiles);
         }
       })
       .catch((error) => {
-        console.error("Failed to load admin homepages:", error);
-        if (refreshId === homepageRefreshId.current) {
-          setAdminHomepages([]);
-        }
+        console.error("Failed to load admin profiles:", error);
       });
   }, [isAdmin, isAuthenticated, isSuperAdmin]);
 
@@ -92,15 +108,19 @@ export function Header({ onMenuClick }: HeaderProps) {
     await logout();
   };
 
-  const selectedHomepageId = searchParams.get("homepage");
-  const selectedHomepage = adminHomepages.find((homepage) => homepage.id === selectedHomepageId);
+  const selectedProfileId = searchParams.get("profileId");
+  const selectedProfile = adminProfiles.find((item) => item.id === selectedProfileId);
 
-  const handleHomepageNavigation = (homepage: { id: string }) => {
+  const handleProfileNavigation = (selected: AdminHomeProfile) => {
     setAdminHomeOpen(false);
-    router.push(`/dashboard?homepage=${encodeURIComponent(homepage.id)}`);
+    const profileParams = new URLSearchParams({
+      profileId: selected.id,
+      profileLabel: selected.name,
+    });
+    router.push(`/profiles/${profileSlug(selected.name)}?${profileParams}`);
   };
 
-  const handleDefaultHomepageNavigation = () => {
+  const handleAdminHomeNavigation = () => {
     setAdminHomeOpen(false);
     router.push("/dashboard");
   };
@@ -133,23 +153,31 @@ export function Header({ onMenuClick }: HeaderProps) {
                   variant="ghost"
                   className="h-9 border border-sky-100 bg-white px-3 text-sm font-medium text-foreground shadow-sm"
                 >
-                  <span className="max-w-48 truncate">{selectedHomepage?.name || "Admin Home"}</span>
+                  <span className="max-w-48 truncate">
+                    {selectedProfile?.name || "Admin Home"}
+                  </span>
                   <ChevronDown className="ml-2 h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuItem onSelect={handleDefaultHomepageNavigation} className="text-sm">
+              <DropdownMenuContent align="end" className="max-h-[70vh] w-64 overflow-y-auto">
+                <DropdownMenuItem onSelect={handleAdminHomeNavigation} className="text-sm">
                   Admin Home
                 </DropdownMenuItem>
-                {adminHomepages.map((homepage) => (
-                  <DropdownMenuItem
-                    key={`homepage-${homepage.id}`}
-                    onSelect={() => handleHomepageNavigation(homepage)}
-                    className="text-sm"
-                  >
-                    {homepage.name}
-                  </DropdownMenuItem>
-                ))}
+                {adminProfiles.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>Profiles</DropdownMenuLabel>
+                    {adminProfiles.map((item) => (
+                      <DropdownMenuItem
+                        key={`profile-${item.id}`}
+                        onSelect={() => handleProfileNavigation(item)}
+                        className="text-sm"
+                      >
+                        {item.name}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -198,9 +226,17 @@ export function Header({ onMenuClick }: HeaderProps) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-8 max-w-40 truncate px-2 text-sm"
+            onClick={() => setUserDetailsOpen(true)}
+          >
+            {profile?.name || userName}
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+              <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="Open user menu">
                 <Avatar className="h-8 w-8">
                   <AvatarImage src={user?.avatar || ""} alt={userName} />
                   <AvatarFallback>{userInitials}</AvatarFallback>
@@ -212,40 +248,9 @@ export function Header({ onMenuClick }: HeaderProps) {
                 <div className="flex flex-col space-y-0.5">
                   <p className="text-[13px] font-medium">{userName}</p>
                   <p className="text-[11px] text-muted-foreground">{user?.email || ""}</p>
-                  {profile && (
-                    <Badge variant="secondary" className="mt-1 w-fit">
-                      {profile.name}
-                    </Badge>
-                  )}
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {isSuperAdmin && (
-                <>
-                  <DropdownMenuItem onClick={() => router.push("/admin/users")}>
-                    <User className="mr-2 h-4 w-4" />
-                    Profile
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => router.push("/admin")}>
-                    <Settings className="mr-2 h-4 w-4" />
-                    Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </>
-              )}
-              {!isSuperAdmin && isAdmin && (
-                <>
-                  <DropdownMenuItem onClick={() => router.push("/setup/general/users")}>
-                    <User className="mr-2 h-4 w-4" />
-                    Profile
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => router.push("/setup")}>
-                    <Settings className="mr-2 h-4 w-4" />
-                    Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </>
-              )}
               <DropdownMenuItem onClick={handleLogout} className="text-destructive">
                 <LogOut className="mr-2 h-4 w-4" />
                 Log out
@@ -254,6 +259,42 @@ export function Header({ onMenuClick }: HeaderProps) {
           </DropdownMenu>
         </div>
       </header>
+      <Dialog open={userDetailsOpen} onOpenChange={setUserDetailsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{userName}</DialogTitle>
+            <DialogDescription>Logged-in user details</DialogDescription>
+          </DialogHeader>
+          <dl className="grid gap-3 text-sm">
+            <div>
+              <dt className="text-muted-foreground">Email</dt>
+              <dd className="font-medium">{user?.email || "Not provided"}</dd>
+            </div>
+            {user?.phone && (
+              <div>
+                <dt className="text-muted-foreground">Phone</dt>
+                <dd className="font-medium">{user.phone}</dd>
+              </div>
+            )}
+            <div>
+              <dt className="text-muted-foreground">Profile</dt>
+              <dd className="font-medium">{profile?.name || (isSuperAdmin ? "Super Admin" : "Not assigned")}</dd>
+            </div>
+            {roles.length > 0 && (
+              <div>
+                <dt className="text-muted-foreground">Roles</dt>
+                <dd className="font-medium">{roles.join(", ")}</dd>
+              </div>
+            )}
+            {tenant?.name && (
+              <div>
+                <dt className="text-muted-foreground">Company</dt>
+                <dd className="font-medium">{tenant.name}</dd>
+              </div>
+            )}
+          </dl>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
